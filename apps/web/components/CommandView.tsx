@@ -411,7 +411,7 @@ export function CommandView({ agentId, setAgentId, openTask, prefill = "" }: { a
           {turns.map((t) => {
             const a = agents.find((x) => x.id === t.agent_id);
             return t.role === "user" ? (
-              <div key={t.id} className="break-anywhere ml-auto max-w-[85%] whitespace-pre-wrap rounded-2xl rounded-br-sm bg-cyan-400/10 px-4 py-2.5 text-sm ring-1 ring-cyan-400/20">
+              <div key={t.id} dir="auto" className="break-anywhere ml-auto max-w-[85%] whitespace-pre-wrap rounded-2xl rounded-br-sm bg-cyan-400/10 px-4 py-2.5 text-sm ring-1 ring-cyan-400/20">
                 {t.content}
               </div>
             ) : (
@@ -429,7 +429,7 @@ export function CommandView({ agentId, setAgentId, openTask, prefill = "" }: { a
                     </button>
                   )}
                 </div>
-                <div className={`rounded-2xl rounded-tl-sm px-4 py-2.5 ${t.content.startsWith("[task failed]") ? "bg-red-400/10 text-red-100 ring-1 ring-red-400/30" : "bg-white/[0.03] ring-1 ring-white/5"}`}>
+                <div dir="auto" className={`rounded-2xl rounded-tl-sm px-4 py-2.5 ${t.content.startsWith("[task failed]") ? "bg-red-400/10 text-red-100 ring-1 ring-red-400/30" : "bg-white/[0.03] ring-1 ring-white/5"}`}>
                   <Markdown text={t.content} />
                 </div>
               </div>
@@ -508,6 +508,7 @@ export function CommandView({ agentId, setAgentId, openTask, prefill = "" }: { a
             onChange={(e) => setInput(e.target.value)}
             disabled={status?.emergency_stop}
             aria-label="Message"
+            dir="auto"
           />
           <button className="btn btn-primary" disabled={sending || !input.trim() || status?.emergency_stop}>
             <Send size={14} /> Send

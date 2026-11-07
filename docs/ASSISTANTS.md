@@ -24,9 +24,15 @@ settings as the rest of STARK AI (no extra install).
   started, write a short handoff in the Command view; only what you write is passed on.
 - **Personal notes.** They remember personal things only with your consent. Personal notes are kept apart from
   your brand workspaces and from the other assistant.
-- **Presence.** In Command each assistant appears as a particle presence (Core, Female or Male, your choice)
-  that gathers in while listening, sparks while thinking and pulses while speaking. It is original artwork drawn
-  from simple shapes; with reduced motion turned on in your system it stays still.
+- **Presence.** In Command each assistant appears as a living 3D presence: Core (a geodesic sphere), Female or
+  Male (your choice, remembered per assistant). Vision is a crisp cyan lattice with golden pulses; Wanda a softer
+  rose lattice with streams of energy and a circling aura. It brightens while listening, a band of light scans
+  while thinking, and the jaw moves while speaking. The figures are synthetic humans (CC0 base models), not any
+  real person; with reduced motion turned on in your system they stay still.
+- **Your computer (desktop app).** Ask "Vision, how's my battery?" or "Wanda, remind me at 6 to post the reel":
+  they can check the computer's status, open a web page, a workspace file or an app, show notifications, set
+  reminders and use the clipboard. Opening things and the clipboard always ask you first; they never control the
+  mouse or keyboard, run commands or change settings.
 - **Voices.** With STARK voice (your own free Gemini key) you hold the talk button and speak English or Urdu;
   each assistant answers in their own voice. Without a key, the voices installed on your computer are used.
   Details: [VOICE.md](VOICE.md).

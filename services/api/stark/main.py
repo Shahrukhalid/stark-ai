@@ -388,6 +388,10 @@ def create_app(settings: Settings | None = None, providers: dict[str, ModelProvi
                       asyncio.create_task(_feeds_loop(holder["k"], social)),
                       asyncio.create_task(account_health.loop(holder["k"], social)),
                       asyncio.create_task(token_refresh.loop(holder["k"], social))]
+        if settings.desktop:
+            from .tools.desktop import reminder_loop
+
+            background.append(asyncio.create_task(reminder_loop(holder["k"])))
         holder["k"].automations = automations.Engine(holder["k"], social, settings, holder["k"].notifier)
         background.append(asyncio.create_task(holder["k"].automations.loop()))
         yield
