@@ -212,8 +212,10 @@ class Notify(_DesktopTool):
     risk = Risk.READ
 
     async def run(self, args: NotifyInput, ctx) -> ToolResult:
+        from ..routines import quiet_now
+
         name = ctx.agent.name if ctx.agent else "STARK AI"
-        ok = await asyncio.to_thread(notify, name, args.text)
+        ok = False if quiet_now(ctx.kernel) else await asyncio.to_thread(notify, name, args.text)
         ctx.kernel.bus.publish("desktop.notify", {"title": name, "text": args.text})
         return ToolResult(True, "notification shown" if ok else "shown in STARK AI")
 
@@ -254,7 +256,11 @@ class Remind(_DesktopTool):
 
 
 def due_reminders(kernel, now: datetime | None = None) -> list[dict[str, Any]]:
+    from ..routines import quiet_now
+
     now = now or datetime.now(timezone.utc)
+    if quiet_now(kernel, now.astimezone()):
+        return []  # quiet hours: reminders wait until they end
     items = list(kernel.db.get_setting(REMINDERS) or [])
     due = [i for i in items if datetime.fromisoformat(i["at"]) <= now]
     if due:

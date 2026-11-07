@@ -76,6 +76,7 @@ class Settings:
     voice_engine: str = "gemini"  # "gemini" when a key is set, otherwise the browser's own speech
     voice_language: str = "auto"  # auto | en | ur
     voice_urdu_script: str = "urdu"  # urdu | roman
+    voice_fast: bool = False  # fast mode: Gemini live voice (desktop app)
     voice_stt_model: str = ""  # empty: newest suitable model for this key
     voice_tts_model: str = ""
     desktop: bool = False  # the engine runs inside the desktop app on the user's computer
@@ -158,6 +159,7 @@ class Settings:
             voice_engine=_env("STARK_VOICE_ENGINE", "gemini").lower(),
             voice_language=_env("STARK_VOICE_LANGUAGE", "auto").lower(),
             voice_urdu_script=_env("STARK_VOICE_URDU_SCRIPT", "urdu").lower(),
+            voice_fast=_env_bool("STARK_VOICE_FAST", False),
             voice_stt_model=_env("STARK_VOICE_STT_MODEL"),
             voice_tts_model=_env("STARK_VOICE_TTS_MODEL"),
             desktop=_env_bool("STARK_DESKTOP", False),

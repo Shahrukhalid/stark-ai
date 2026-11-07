@@ -6,7 +6,7 @@ import { detectWake, parseAddress } from "@/lib/addressing";
 import { useStark } from "@/lib/store";
 import type { Agent, Task, Turn } from "@/lib/types";
 import { Markdown } from "./Markdown";
-import { createRecognizer, isSpeaking, isUrdu, speak, stopSpeaking, sttSupported, ttsSupported, voiceListenStart, voiceListenStop, voiceSpeak, voiceStopSpeaking, voiceLevel, type Recognizer, type VoiceStatus } from "@/lib/voice";
+import { createRecognizer, isSpeaking, isUrdu, speak, stopSpeaking, sttSupported, ttsSupported, voiceListenStart, voiceListenStop, voiceSpeak, voiceStopSpeaking, voiceLevel, liveTalk, type Recognizer, type VoiceStatus } from "@/lib/voice";
 import { ApprovalCard } from "./ApprovalCard";
 import { AgentGlyph, StateBadge, STATE_META, TaskStatus } from "./ui";
 import { ParticlePresence } from "./ParticlePresence";
@@ -204,6 +204,19 @@ export function CommandView({ agentId, setAgentId, openTask, prefill = "" }: { a
 
   // ---------------- voice ----------------
   const startPtt = useCallback(() => {
+    if (vstatus?.fast) {
+      if (pttActive) return;
+      setPttActive(true);
+      setListeningAgent(agentId);
+      hush();
+      liveTalk(client, agentId, true).catch((e: any) => {
+        setPttActive(false);
+        setListeningAgent(null);
+        setVstatus((v) => (v ? { ...v, fast: false } : v)); // use the normal voice from now on
+        notify("warn", e.message);
+      });
+      return;
+    }
     if (engineVoice && vstatus) {
       if (pttActive) return;
       setPttActive(true);
@@ -233,9 +246,16 @@ export function CommandView({ agentId, setAgentId, openTask, prefill = "" }: { a
     });
     recRef.current = rec;
     rec?.start();
-  }, [agent, agentId, client, engineVoice, notify, pttActive, send, setListeningAgent, vstatus]);
+  }, [agent, agentId, client, engineVoice, hush, notify, pttActive, send, setListeningAgent, vstatus]);
 
   const stopPtt = useCallback(() => {
+    if (vstatus?.fast) {
+      if (!pttActive) return;
+      setPttActive(false);
+      setListeningAgent(null);
+      liveTalk(client, agentId, false).catch(() => undefined);
+      return;
+    }
     if (!(engineVoice && vstatus)) return recRef.current?.stop();
     if (!pttActive) return;
     setPttActive(false);
@@ -247,7 +267,7 @@ export function CommandView({ agentId, setAgentId, openTask, prefill = "" }: { a
       })
       .catch((e: any) => notify("error", e.message))
       .finally(() => setPartial(""));
-  }, [client, engineVoice, notify, pttActive, send, setListeningAgent, vstatus]);
+  }, [agentId, client, engineVoice, notify, pttActive, send, setListeningAgent, vstatus]);
 
   useEffect(() => {
     if (!wakeMode) return;
@@ -296,6 +316,25 @@ export function CommandView({ agentId, setAgentId, openTask, prefill = "" }: { a
     return () => clearInterval(id);
   }, [client, engineVoice, vstatus?.local_audio, speaking, pttActive]);
 
+  // Fast mode: show what was heard and what the assistant is saying as it happens.
+  const [liveReply, setLiveReply] = useState("");
+  const seenLive = useRef(0);
+  useEffect(() => {
+    const fresh = events.slice(seenLive.current);
+    seenLive.current = events.length;
+    for (const ev of fresh) {
+      if (ev.type !== "voice.live" || ev.data.agent_id !== agentId) continue;
+      if (ev.data.role === "user") setPartial((p) => (p === "…" ? "" : p) + ev.data.text);
+      else if (ev.data.done) {
+        setPartial("");
+        setTimeout(() => setLiveReply(""), 6000);
+      } else {
+        setLiveReply((r) => r + ev.data.text);
+        setSpeaking(true);
+      }
+    }
+  }, [events, agentId]);
+
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.code === "Space") {
@@ -325,7 +364,7 @@ export function CommandView({ agentId, setAgentId, openTask, prefill = "" }: { a
               state={presenceState(liveState, speaking)}
               level={level}
               partial={partial}
-              reply={[...turns].reverse().find((t) => t.role === "assistant")?.content || ""}
+              reply={liveReply || [...turns].reverse().find((t) => t.role === "assistant")?.content || ""}
               listening={pttActive}
               approvals={taskApprovals.length}
               onTalkStart={startPtt}

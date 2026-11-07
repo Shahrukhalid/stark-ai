@@ -26,6 +26,22 @@ professional, gentle, natural) for each assistant, and press **Hear** to listen.
   waits on screen.
 - Nothing is recorded or sent unless you hold the button. Recordings stop by themselves after 60 seconds.
 
+## Fast mode
+
+Settings → STARK voice → **Fast mode** (desktop app). Hold to talk as usual, but the reply starts almost at once:
+the voice streams both ways with Gemini's live model. The live voice only talks; anything real (your posts,
+analytics, reminders, apps) is handed to the assistant through the normal chat, so approvals and E-STOP still apply
+and the work is saved in the conversation. It uses more of your Gemini quota; if it can't connect, the normal voice
+takes over.
+
+## Routines, quiet hours and the daily summary
+
+- Ask by voice or text: "Wanda, every Monday at 9 draft three posts" creates a routine (you approve it first).
+  Routines are automations: see and switch them off under Automations. They never publish on their own.
+- Settings → **Routines and quiet hours**: quiet hours (no pop-ups or spoken summaries; reminders wait) and a daily
+  summary at a time you choose, by Vision or Wanda, in English or Urdu: what is scheduled today, what went out
+  yesterday, failures, approvals waiting, accounts to check and today's reminders. It costs no AI requests.
+
 ## Voices and languages
 
 | | Voice | Style |

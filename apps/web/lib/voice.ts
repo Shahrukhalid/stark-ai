@@ -177,6 +177,7 @@ export interface VoiceStatus {
   configured: boolean;
   local_audio: boolean;
   local_reason: string;
+  fast?: boolean;
   language: string;
   urdu_script: string;
 }
@@ -269,4 +270,10 @@ export interface VoiceLevel {
 /** Live loudness of the desktop microphone and speakers. */
 export function voiceLevel(client: Client): Promise<VoiceLevel> {
   return client.get<VoiceLevel>("/api/voice/level");
+}
+
+/** Fast mode (Gemini live voice, desktop app): open the session, then hold to talk. */
+export async function liveTalk(client: Client, agentId: string, down: boolean): Promise<void> {
+  if (down) await client.post("/api/voice/live/start", { agent_id: agentId });
+  await client.post("/api/voice/live/talk", { down });
 }

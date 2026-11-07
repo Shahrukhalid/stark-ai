@@ -88,6 +88,25 @@ class Audio:
                 raise AudioUnavailable("The microphone could not be opened. Allow microphone access for "
                                        "STARK AI in your system settings.") from exc
 
+    def stream(self, on_chunk) -> None:
+        """Record and hand each block to on_chunk(bytes) as it arrives (fast mode). Stop with cancel()."""
+        sd = self._module()
+        with self._lock:
+            self._close_input()
+
+            def take(indata, frames, time_info, status):  # noqa: ARG001 - PortAudio callback signature
+                data = bytes(indata)
+                self.mic_level = rms(data)
+                on_chunk(data)
+
+            try:
+                self._stream = sd.RawInputStream(samplerate=RATE, channels=1, dtype="int16", blocksize=1600,
+                                                 callback=take)
+                self._stream.start()
+            except Exception as exc:  # noqa: BLE001
+                self._stream = None
+                raise AudioUnavailable("The microphone could not be opened.") from exc
+
     def stop(self) -> bytes:
         """Stop recording; return a WAV file (empty bytes when nothing was recorded)."""
         with self._lock:

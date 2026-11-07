@@ -59,6 +59,22 @@ def _owner_only(path: Path, mode: int) -> None:
         pass
 
 
+class QuietIn(BaseModel):
+    enabled: bool = False
+    start: str = Field("22:00", pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
+    end: str = Field("07:00", pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
+
+class SummaryIn(BaseModel):
+    enabled: bool = False
+    time: str = Field("09:00", pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
+    agent: Literal["vision", "wanda"] = "vision"
+    language: Literal["en", "ur"] = "en"
+
+class RoutinesIn(BaseModel):
+    quiet: QuietIn
+    summary: SummaryIn
+
+
 def build_kernel(settings: Settings, providers: dict[str, ModelProvider] | None = None) -> Kernel:
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     _owner_only(settings.data_dir, 0o700)  # conversations, memories and logins: owner only
@@ -389,9 +405,13 @@ def create_app(settings: Settings | None = None, providers: dict[str, ModelProvi
                       asyncio.create_task(account_health.loop(holder["k"], social)),
                       asyncio.create_task(token_refresh.loop(holder["k"], social))]
         if settings.desktop:
+            from .routines import summary_loop
+            from .tools.desktop import notify as desktop_notify
             from .tools.desktop import reminder_loop
 
             background.append(asyncio.create_task(reminder_loop(holder["k"])))
+            background.append(asyncio.create_task(summary_loop(holder["k"], getattr(app.state, "voice_say", None),
+                                                                desktop_notify)))
         holder["k"].automations = automations.Engine(holder["k"], social, settings, holder["k"].notifier)
         background.append(asyncio.create_task(holder["k"].automations.loop()))
         yield
@@ -484,6 +504,36 @@ def create_app(settings: Settings | None = None, providers: dict[str, ModelProvi
     from .voice.routes import register as register_voice
 
     register_voice(app, api, kernel, settings)
+
+    @app.get("/api/assistant/routines", dependencies=[api])
+    def routines_get(k: Kernel = Depends(kernel)) -> dict[str, Any]:
+        from .routines import QUIET, SUMMARY, quiet_now
+
+        return {"quiet": QuietIn(**{**QuietIn().model_dump(), **(k.db.get_setting(QUIET) or {})}).model_dump(),
+                "summary": SummaryIn(**{kk: v for kk, v in {**SummaryIn().model_dump(), **(k.db.get_setting(SUMMARY) or {})}.items()
+                                        if kk in SummaryIn.model_fields}).model_dump(),
+                "quiet_now": quiet_now(k)}
+
+    @app.put("/api/assistant/routines", dependencies=[api])
+    def routines_put(body: RoutinesIn, k: Kernel = Depends(kernel)) -> dict[str, Any]:
+        from .routines import QUIET, SUMMARY
+
+        k.db.set_setting(QUIET, body.quiet.model_dump())
+        last = (k.db.get_setting(SUMMARY) or {}).get("last")
+        k.db.set_setting(SUMMARY, {**body.summary.model_dump(), **({"last": last} if last else {})})
+        k.obs.audit("user", "routines.update", "ok")
+        return routines_get(k)
+
+    @app.post("/api/assistant/summary", dependencies=[api])
+    async def summary_now(k: Kernel = Depends(kernel)) -> dict[str, Any]:
+        """Today's summary now (and spoken when STARK voice is on in the desktop app)."""
+        from .routines import SUMMARY, summary_text
+
+        cfg = k.db.get_setting(SUMMARY) or {}
+        text = summary_text(k, urdu=cfg.get("language") == "ur")
+        say = getattr(app.state, "voice_say", None)
+        spoken_ = bool(say) and await say(cfg.get("agent") or "vision", text)
+        return {"text": text, "spoken": spoken_}
 
     @app.get("/api/computer/status", dependencies=[api])
     def computer_status() -> dict[str, Any]:
