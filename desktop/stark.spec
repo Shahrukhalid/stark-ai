@@ -24,7 +24,8 @@ for base in {sysconfig.get_paths()["platlib"], sysconfig.get_paths()["purelib"]}
         WHISPER_LIBS += [(p, ".") for p in glob.glob(str(Path(base) / pat)) if Path(p).is_file()]
 print("whisper libraries:", [Path(p).name for p, _ in WHISPER_LIBS])
 
-hidden = (["keyring.backends.macOS"] if sys.platform == "darwin" else ["keyring.backends.Windows"]) + ["imageio_ffmpeg", "pywhispercpp", "pywhispercpp.model", "_pywhispercpp", "numpy", "sounddevice"] + collect_submodules("stark") + collect_submodules("uvicorn")
+hidden = (["keyring.backends.macOS", "ApplicationServices", "Quartz", "AppKit"] if sys.platform == "darwin"
+          else ["keyring.backends.Windows", "comtypes", "comtypes.client"]) + ["imageio_ffmpeg", "pywhispercpp", "pywhispercpp.model", "_pywhispercpp", "numpy", "sounddevice", "hotkey"] + collect_submodules("stark") + collect_submodules("uvicorn")
 a = Analysis(
     [str(ROOT / "desktop/stark_desktop.py")],
     pathex=[str(ROOT / "services/api")],
@@ -47,6 +48,8 @@ if sys.platform == "darwin":
             "CFBundleVersion": VERSION, "LSMinimumSystemVersion": "11.0", "NSHighResolutionCapable": True,
             "LSApplicationCategoryType": "public.app-category.productivity",
             "NSHumanReadableCopyright": "© 2026 Shahrukh Khalid. MIT License.",
+            "NSAccessibilityUsageDescription": "Lets Vision and Wanda click and type in apps for you, only after you "
+                                               "approve each action.",
             "NSMicrophoneUsageDescription": "STARK AI listens only while you hold the talk button, so you can "
                                             "speak to Vision and Wanda.",
         },

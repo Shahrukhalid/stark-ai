@@ -48,6 +48,28 @@ jobs:
         run: |
           if [ "$RUNNER_OS" = "macOS" ]; then "dist/STARK AI.app/Contents/MacOS/STARK AI" --self-test
           else "dist/STARK AI/STARK AI.exe" --self-test; fi
+      - name: macOS signature (stable self-signed identity, so permissions survive updates)
+        if: runner.os == 'macOS'
+        continue-on-error: true  # without it the app keeps its ad-hoc signature and still ships
+        env:
+          MAC_SIGN_P12: ${{ secrets.MAC_SIGN_P12 }}
+          MAC_SIGN_PASSWORD: ${{ secrets.MAC_SIGN_PASSWORD }}
+        run: |
+          if [ -z "$MAC_SIGN_P12" ]; then echo "No signing identity set; the app keeps its ad-hoc signature."; exit 0; fi
+          KC="$RUNNER_TEMP/stark.keychain-db"; KP=$(uuidgen)
+          echo "$MAC_SIGN_P12" | base64 --decode > "$RUNNER_TEMP/stark.p12"
+          security create-keychain -p "$KP" "$KC"
+          security set-keychain-settings -lut 3600 "$KC"
+          security unlock-keychain -p "$KP" "$KC"
+          security import "$RUNNER_TEMP/stark.p12" -k "$KC" -P "$MAC_SIGN_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KP" "$KC" >/dev/null
+          openssl pkcs12 -in "$RUNNER_TEMP/stark.p12" -clcerts -nokeys -passin pass:"$MAC_SIGN_PASSWORD" -out "$RUNNER_TEMP/stark.pem" 2>/dev/null \
+            || openssl pkcs12 -legacy -in "$RUNNER_TEMP/stark.p12" -clcerts -nokeys -passin pass:"$MAC_SIGN_PASSWORD" -out "$RUNNER_TEMP/stark.pem"
+          sudo security add-trusted-cert -d -r trustRoot -p codeSign -k /Library/Keychains/System.keychain "$RUNNER_TEMP/stark.pem" || true
+          security list-keychains -d user -s "$KC" $(security list-keychains -d user | tr -d '"')
+          codesign --force --deep --sign "STARK AI Self-Signed" --keychain "$KC" "dist/STARK AI.app"
+          codesign --verify --deep --strict "dist/STARK AI.app" && codesign -dr - "dist/STARK AI.app"
+          rm -f "$RUNNER_TEMP/stark.p12" "$RUNNER_TEMP/stark.pem"
       - name: macOS disk image
         if: runner.os == 'macOS'
         run: |

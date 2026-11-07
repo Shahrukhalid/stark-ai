@@ -303,8 +303,13 @@ export function CommandView({ agentId, setAgentId, openTask, prefill = "" }: { a
         setFocus((f) => !f);
       }
     };
+    const open = () => setFocus(true);
     window.addEventListener("keydown", key);
-    return () => window.removeEventListener("keydown", key);
+    window.addEventListener("stark:focus", open);
+    return () => {
+      window.removeEventListener("keydown", key);
+      window.removeEventListener("stark:focus", open);
+    };
   }, []);
 
   const liveState = listeningAgent === agentId || (listeningAgent === "wake" && !ACTIVE.has(agent?.live.status || "idle")) ? "listening" : agent?.live.status || "idle";

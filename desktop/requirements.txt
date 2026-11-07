@@ -8,3 +8,5 @@ imageio-ffmpeg>=0.5  # FFmpeg for the video studio (static build for macOS arm64
 
 keyring==25.7.0  # MIT; native macOS Keychain / Windows Credential Manager only
 cryptography==50.0.2  # Apache-2.0 OR BSD-3-Clause; authenticated credential-file encryption
+pyobjc-framework-ApplicationServices; sys_platform == "darwin"  # MIT; Accessibility API for computer control
+comtypes; sys_platform == "win32"  # MIT; UI Automation for computer control

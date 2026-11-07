@@ -34,6 +34,9 @@ settings as the rest of STARK AI (no extra install).
 - **Remembering conversations.** Each assistant can look back through its own past conversations
   (memory.recall), by meaning with your Gemini key or by words without it. Never the other assistant's; nothing
   when memory is turned off.
+- **Shortcut and computer control.** ⌥/Alt+Shift+Space opens the assistant from any app. With computer control
+  turned on in Settings, they can list an app's buttons, click, type and press shortcuts, each action approved
+  first. See [COMPUTER.md](COMPUTER.md).
 - **Your computer (desktop app).** Ask "Vision, how's my battery?" or "Wanda, remind me at 6 to post the reel":
   they can check the computer's status, open a web page, a workspace file or an app, show notifications, set
   reminders and use the clipboard. Opening things and the clipboard always ask you first; they never control the

@@ -89,7 +89,7 @@ export function AssistantFocus({
       >
         <Mic size={28} style={{ color }} />
       </button>
-      <p className="text-xs text-[var(--color-mute)]">Hold to talk · Space · Esc to exit · Ctrl/⌘+Shift+Space opens this view</p>
+      <p className="text-xs text-[var(--color-mute)]">Hold to talk · Space · Esc to exit · Ctrl/⌘+Shift+Space opens this view · ⌥/Alt+Shift+Space from any app (desktop)</p>
     </div>,
     document.body,
   );

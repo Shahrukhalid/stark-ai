@@ -82,6 +82,16 @@ export function Shell({ onSignOut }: { onSignOut: () => void }) {
   }, []);
   const activity = agents.length ? agents.filter((a) => ["thinking", "executing", "collaborating", "listening", "waiting_approval"].includes(a.live?.status)).length / agents.length : 0;
 
+  // The desktop shortcut (from any app) opens Command in full screen.
+  useEffect(() => {
+    const open = () => {
+      setView("command");
+      setTimeout(() => window.dispatchEvent(new Event("stark:focus")), 300);
+    };
+    window.addEventListener("stark:assistant", open);
+    return () => window.removeEventListener("stark:assistant", open);
+  }, [setView]);
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
