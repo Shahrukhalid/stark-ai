@@ -79,6 +79,7 @@ class Settings:
     voice_stt_model: str = ""  # empty: newest suitable model for this key
     voice_tts_model: str = ""
     desktop: bool = False  # the engine runs inside the desktop app on the user's computer
+    computer_control: bool = False  # let Vision and Wanda click and type (each action still asks first)
 
     # budgets & limits
     task_token_budget: int = 200_000
@@ -160,6 +161,7 @@ class Settings:
             voice_stt_model=_env("STARK_VOICE_STT_MODEL"),
             voice_tts_model=_env("STARK_VOICE_TTS_MODEL"),
             desktop=_env_bool("STARK_DESKTOP", False),
+            computer_control=_env_bool("STARK_COMPUTER_CONTROL", False),
             openrouter_base_url=_env("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"),
             openrouter_models={
                 tier: _env(f"OPENROUTER_MODEL_{tier.upper()}", _env("OPENROUTER_MODEL"))

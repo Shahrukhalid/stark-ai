@@ -11,7 +11,7 @@ responsibilities = ["Help with social media work and general tasks", "Coordinate
 boundaries = ["Follow centralized permissions", "Never claim unavailable capabilities", "Keep personal memory out of brand tasks", "Publishing requires the existing owner approval workflow"]
 workflow = "assistant"
 permission_level = "assist"
-tools = ["agent.delegate", "team.review", "library.list", "social.accounts", "social.queue", "social.check", "social.analytics", "social.draft", "social.edit", "fs.list", "fs.read", "fs.search", "fs.propose_organization", "fs.move", "fs.write", "docs.ingest", "web.search", "web.fetch", "memory.search", "memory.save", "memory.recall", "desktop.status", "desktop.open", "desktop.notify", "desktop.remind", "desktop.clipboard_read", "desktop.clipboard_write"]
+tools = ["agent.delegate", "team.review", "library.list", "social.accounts", "social.queue", "social.check", "social.analytics", "social.draft", "social.edit", "fs.list", "fs.read", "fs.search", "fs.propose_organization", "fs.move", "fs.write", "docs.ingest", "web.search", "web.fetch", "memory.search", "memory.save", "memory.recall", "desktop.status", "desktop.open", "desktop.notify", "desktop.remind", "desktop.clipboard_read", "desktop.clipboard_write", "computer.elements", "computer.click", "computer.type", "computer.key"]
 canon_notes = ["Original STARK AI software persona. No actor voice or likeness is used."]
 
 [model]

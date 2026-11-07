@@ -284,6 +284,18 @@ def run_app() -> None:
                 pass
 
     instance.on_show = show
+
+    def summon() -> None:
+        """The shortcut from any app: bring STARK AI forward and open the full-screen assistant."""
+        show()
+        try:
+            window.evaluate_js("window.dispatchEvent(new Event('stark:assistant'))")
+        except Exception:  # noqa: BLE001 - the page may still be loading
+            pass
+
+    from hotkey import register
+
+    register(summon)
     window.events.closed += backend.stop
     try:
         webview.start(boot, private_mode=False, storage_path=str(data_dir() / "webview"))

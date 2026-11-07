@@ -485,6 +485,33 @@ def create_app(settings: Settings | None = None, providers: dict[str, ModelProvi
 
     register_voice(app, api, kernel, settings)
 
+    @app.get("/api/computer/status", dependencies=[api])
+    def computer_status() -> dict[str, Any]:
+        """Is computer control turned on, and has the system allowed it (macOS Accessibility)?"""
+        if not settings.desktop:
+            return {"available": False, "enabled": False, "allowed": False}
+        from .computer import ControlError
+        from .tools.computer import get_backend
+
+        try:
+            allowed = get_backend().trusted()
+        except ControlError:
+            return {"available": False, "enabled": settings.computer_control, "allowed": False}
+        return {"available": True, "enabled": settings.computer_control, "allowed": allowed}
+
+    @app.post("/api/computer/allow", dependencies=[api])
+    def computer_allow() -> dict[str, Any]:
+        """Show the system's permission prompt (macOS: Accessibility)."""
+        if not settings.desktop:
+            raise HTTPException(409, "only in the desktop app")
+        from .computer import ControlError
+        from .tools.computer import get_backend
+
+        try:
+            return {"allowed": get_backend().trusted(prompt=True)}
+        except ControlError:
+            raise HTTPException(409, "Computer control is not available on this computer.") from None
+
     # ---------------------------------------------------------- system
     @app.get("/api/system/status", dependencies=[api])
     async def system_status(k: Kernel = Depends(kernel)):

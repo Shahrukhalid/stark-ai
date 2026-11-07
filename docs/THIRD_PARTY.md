@@ -31,3 +31,8 @@ do not depict any real person. https://github.com/makehumancommunity/makehuman
 
 Urdu text is shown with Noto Nastaliq Urdu (`apps/web/app/fonts/`, Arabic-script subset), © Google LLC, under the
 SIL Open Font License 1.1; the license is in `apps/web/app/fonts/OFL-NotoNastaliqUrdu.txt`.
+
+## Computer control (desktop app)
+
+- [PyObjC ApplicationServices](https://github.com/ronaldoussoren/pyobjc) — MIT. macOS Accessibility API.
+- [comtypes](https://github.com/enthought/comtypes) — MIT. Windows UI Automation.
