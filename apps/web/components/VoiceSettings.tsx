@@ -20,6 +20,7 @@ export function VoiceSettings() {
   const [engine, setEngine] = useState("gemini");
   const [language, setLanguage] = useState("auto");
   const [script, setScript] = useState("urdu");
+  const [fast, setFast] = useState(false);
   const [busy, setBusy] = useState("");
 
   useEffect(() => {
@@ -38,6 +39,7 @@ export function VoiceSettings() {
         .then((d) => {
           if (d.secrets.GEMINI_API_KEY) setKey(KEEP);
           setEngine(d.settings.STARK_VOICE_ENGINE || "gemini");
+          setFast(d.settings.STARK_VOICE_FAST === "true");
         })
         .catch(() => undefined);
   }, [client]);
@@ -46,7 +48,7 @@ export function VoiceSettings() {
     setBusy("save");
     try {
       await client.put("/api/desktop/settings", {
-        values: { GEMINI_API_KEY: key, STARK_VOICE_ENGINE: engine === "gemini" ? "" : engine, STARK_VOICE_LANGUAGE: language === "auto" ? "" : language, STARK_VOICE_URDU_SCRIPT: script === "urdu" ? "" : script },
+        values: { GEMINI_API_KEY: key, STARK_VOICE_ENGINE: engine === "gemini" ? "" : engine, STARK_VOICE_LANGUAGE: language === "auto" ? "" : language, STARK_VOICE_URDU_SCRIPT: script === "urdu" ? "" : script, STARK_VOICE_FAST: fast ? "true" : "" },
         restart: true,
       });
       notify("success", "Saved. STARK AI is restarting with the new voice settings.");
@@ -122,6 +124,12 @@ export function VoiceSettings() {
               <option value="urdu">اردو (Urdu script)</option>
               <option value="roman">Roman Urdu</option>
             </select>
+          </label>
+          <label className="flex items-start gap-2 text-sm sm:col-span-2">
+            <input type="checkbox" className="mt-1" checked={fast} onChange={(e) => setFast(e.target.checked)} />
+            <span>
+              <b>Fast mode</b>: live voice for near-instant replies (Gemini live). Uses more of your Gemini quota; if it can&apos;t connect, the normal voice is used.
+            </span>
           </label>
           <div className="flex items-end">
             <button type="button" className="btn btn-primary" disabled={busy === "save" || !key} onClick={save}>

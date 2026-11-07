@@ -3,6 +3,7 @@
 import { PhoneSettings } from "./PhoneSettings";
 import { VoiceSettings } from "./VoiceSettings";
 import { ComputerSettings } from "./ComputerSettings";
+import { RoutinesSettings } from "./RoutinesSettings";
 import { Monitor, Moon, Sun, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { isDesktop } from "@/lib/api";
@@ -213,6 +214,8 @@ export function SettingsView({ onSignOut }: { onSignOut: () => void }) {
       </Section>
 
       <VoiceSettings />
+
+      <RoutinesSettings />
 
       <ComputerSettings />
 

@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -245,3 +247,76 @@ def test_live_levels_for_the_presence(voice_client):
     assert lv["listening"] and lv["mic"] > 0
     c.post("/api/voice/listen/cancel")
     assert c.get("/api/voice/level").json() == {"playing": False, "out": 0.0, "mic": 0.0, "listening": False}
+
+
+class FakeWS:
+    """A stand-in for the live voice connection."""
+
+    def __init__(self):
+        self.sent = []
+        self.inbox = asyncio.Queue()
+
+    async def send(self, m):
+        self.sent.append(json.loads(m))
+        if "setup" in self.sent[-1]:
+            await self.inbox.put(json.dumps({"setupComplete": {}}))
+
+    async def recv(self):
+        return await self.inbox.get()
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        m = await self.inbox.get()
+        if m is None:
+            raise StopAsyncIteration
+        return m
+
+    async def close(self):
+        await self.inbox.put(None)
+
+
+async def test_fast_mode_routes_requests_through_the_assistant(settings):
+    from stark.main import build_kernel
+    from stark.voice.audio import Audio
+    from stark.voice.live import LiveSession
+
+    k = build_kernel(settings, {})
+    events = []
+    bus = SimpleNamespace(publish=lambda t, d: events.append((t, d)))
+    ws = FakeWS()
+
+    async def connect(url, headers):
+        assert headers == {"x-goog-api-key": "gem-key"}
+        return ws
+
+    s = LiveSession("gem-key", Audio(FakeSD), k, bus, "wanda", "Sulafat", "Say warmly", connect=connect)
+    s.model = "gemini-live-test"
+    submitted = []
+    k.submit_chat = lambda agent, text: submitted.append((agent, text)) or {"id": "t1"}
+
+    async def wait(task_id, timeout=None):
+        return {"status": "completed", "result": "Three drafts are ready."}
+
+    k.wait = wait
+    await s.start()
+    setup = ws.sent[0]["setup"]
+    assert setup["generationConfig"]["speechConfig"]["voiceConfig"]["prebuiltVoiceConfig"]["voiceName"] == "Sulafat"
+    assert setup["tools"][0]["functionDeclarations"][0]["name"] == "ask_stark"
+    await s.talk(True)
+    await s.talk(False)
+    kinds = [list(m["realtimeInput"])[0] for m in ws.sent if "realtimeInput" in m]
+    assert kinds[0] == "activityStart" and kinds[-1] == "activityEnd" and "audio" in kinds
+    await ws.inbox.put(json.dumps({"toolCall": {"functionCalls": [{"id": "c1", "name": "ask_stark",
+                                                                   "args": {"request": "draft three posts"}}]}}))
+    await ws.inbox.put(json.dumps({"serverContent": {"outputTranscription": {"text": "On it"}}}))
+    for _ in range(50):
+        await asyncio.sleep(0.01)
+        if any("toolResponse" in m for m in ws.sent):
+            break
+    assert submitted == [("wanda", "draft three posts")]
+    resp = next(m for m in ws.sent if "toolResponse" in m)["toolResponse"]["functionResponses"][0]
+    assert resp == {"id": "c1", "name": "ask_stark", "response": {"output": "Three drafts are ready."}}
+    assert ("voice.live", {"agent_id": "wanda", "role": "assistant", "text": "On it"}) in events
+    await s.stop()

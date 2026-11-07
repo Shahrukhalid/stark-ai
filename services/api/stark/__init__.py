@@ -1,3 +1,3 @@
 """STARK AI - Project Genesis: a governed multi-agent social media team."""
 
-__version__ = "1.14.0"
+__version__ = "1.15.0"

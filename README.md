@@ -50,6 +50,7 @@ Each agent has its own free model with automatic fallback, its own prompt, memor
 ### Create
 - **Command**: talk to any agent by text or voice.
 - **Use your apps**: press ⌥/Alt+Shift+Space anywhere to talk to Vision or Wanda; with computer control on they click, type and press shortcuts for you, every action approved first. [How](docs/COMPUTER.md)
+- **Routines by voice**: "every Monday at 9 draft three posts" becomes an automation; quiet hours and a spoken daily summary; **fast mode** for near-instant spoken replies.
 - **STARK voice**: hold to talk to Vision and Wanda in English or Urdu; each answers in their own voice. Uses your own free Gemini key; approvals stay on screen. [How it works](docs/VOICE.md)
 - **Compose**: live preview per platform, character counter, engagement score (0–100) with tips.
 - **12 platforms**: Bluesky, Mastodon, X, Threads, LinkedIn, Instagram, Facebook, TikTok, YouTube, Telegram, Discord, Slack.

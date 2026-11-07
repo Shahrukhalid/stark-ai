@@ -34,6 +34,8 @@ settings as the rest of STARK AI (no extra install).
 - **Remembering conversations.** Each assistant can look back through its own past conversations
   (memory.recall), by meaning with your Gemini key or by words without it. Never the other assistant's; nothing
   when memory is turned off.
+- **Routines.** "Wanda, every Monday at 9 draft three posts" becomes an automation (approved first). Quiet hours
+  and a spoken daily summary are in Settings. Fast mode makes spoken replies near-instant. See [VOICE.md](VOICE.md).
 - **Shortcut and computer control.** ⌥/Alt+Shift+Space opens the assistant from any app. With computer control
   turned on in Settings, they can list an app's buttons, click, type and press shortcuts, each action approved
   first. See [COMPUTER.md](COMPUTER.md).

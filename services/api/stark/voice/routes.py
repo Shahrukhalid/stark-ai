@@ -31,6 +31,14 @@ class SpeakIn(BaseModel):
     style: str = Field("", max_length=40)
 
 
+class LiveIn(BaseModel):
+    agent_id: str = Field(max_length=40)
+
+
+class TalkIn(BaseModel):
+    down: bool
+
+
 class PrefIn(BaseModel):
     agent_id: str = Field(max_length=40)
     voice: str = Field("", max_length=40)  # empty: back to the assistant's default
@@ -60,6 +68,7 @@ def register(app: FastAPI, api: Any, kernel: Callable[[], Any], settings: Any, a
     def status() -> dict[str, Any]:
         ok, why = local_audio()
         return {"engine": engine(), "configured": voice.configured(), "local_audio": ok, "local_reason": why,
+                "fast": bool(settings.voice_fast and ok and engine() == "gemini"),
                 "language": settings.voice_language, "urdu_script": settings.voice_urdu_script}
 
     async def _text(wav: bytes, mime: str) -> dict[str, Any]:
@@ -173,6 +182,69 @@ def register(app: FastAPI, api: Any, kernel: Callable[[], Any], settings: Any, a
         """Live loudness for the presence and waveform (desktop microphone and speakers)."""
         return {"playing": audio.playing, "out": round(audio.out_level, 3), "mic": round(audio.mic_level, 3),
                 "listening": audio.recording}
+
+    async def say_line(agent_id: str, text: str) -> bool:
+        """Speak a line through this computer's speakers (daily summary). False when voice isn't set up."""
+        k = kernel()
+        if engine() != "gemini" or not local_audio()[0] or agent_id not in k.registry:
+            return False
+        name, style = chosen(k, agent_id)
+        player = None
+        try:
+            async for chunk, rate in voice.speak_stream(spoken(text, 600), name, style):
+                player = player or audio.player(rate)
+                player.feed(chunk)
+        except (VoiceError, AudioUnavailable):
+            return False
+        finally:
+            if player is not None:
+                player.close()
+        return player is not None
+
+    app.state.voice_say = say_line
+
+    # ---------------------------------------------------------------- fast mode (Gemini live voice)
+    live: dict[str, Any] = {}
+
+    @app.post("/api/voice/live/start", dependencies=[api])
+    async def live_start(body: LiveIn, k: Any = Depends(kernel)) -> dict[str, Any]:
+        from .live import LiveSession
+
+        if not (settings.voice_fast and engine() == "gemini" and local_audio()[0]):
+            raise HTTPException(409, "Fast mode needs the desktop app, a Gemini key and Settings → Fast mode.")
+        if body.agent_id not in k.registry:
+            raise HTTPException(404, "unknown agent")
+        s = live.get("s")
+        if s and s.open and s.agent_id == body.agent_id:
+            return {"live": True, "model": s.model}
+        if s:
+            await s.stop()
+        name, style = chosen(k, body.agent_id)
+        s = LiveSession(settings.gemini_api_key, audio, k, k.bus, body.agent_id, name, style)
+        try:
+            await s.start()
+        except Exception:  # noqa: BLE001 - any connection problem: fall back to the normal voice
+            raise HTTPException(502, "Fast mode could not start; the normal voice is used instead.") from None
+        live["s"] = s
+        return {"live": True, "model": s.model}
+
+    @app.post("/api/voice/live/talk", dependencies=[api])
+    async def live_talk(body: TalkIn) -> dict[str, Any]:
+        s = live.get("s")
+        if not s or not s.open:
+            raise HTTPException(409, "No fast-mode session.")
+        try:
+            await s.talk(body.down)
+        except AudioUnavailable:
+            raise HTTPException(409, MIC_HELP) from None
+        return {"talking": s.talking}
+
+    @app.post("/api/voice/live/stop", dependencies=[api])
+    async def live_stop() -> dict[str, Any]:
+        s = live.pop("s", None)
+        if s:
+            await s.stop()
+        return {"live": False}
 
     @app.post("/api/voice/stop", dependencies=[api])
     def stop() -> dict[str, Any]:

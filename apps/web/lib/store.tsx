@@ -114,6 +114,9 @@ export function StarkProvider({ conn, children, onAuthError }: { conn: Connectio
             debounce("approvals", loadApprovals, 50);
             debounce("status", loadStatus);
             break;
+          case "assistant.summary":
+            notify("info", `${String(ev.data.agent_id).toUpperCase()}: ${ev.data.text}`.slice(0, 300));
+            break;
           case "desktop.notify":
             notify("info", `${ev.data.title}: ${ev.data.text}`.slice(0, 200));
             break;

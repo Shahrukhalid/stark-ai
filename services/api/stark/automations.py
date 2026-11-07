@@ -33,7 +33,7 @@ TRIGGERS = ("event", "schedule", "webhook")
 OPS = ("equals", "not_equals", "contains", "not_contains", "matches", "greater_than", "less_than", "is_empty",
        "not_empty")
 ACTIONS = ("ask_agent", "create_draft", "label_mention", "add_utm", "notify", "webhook")
-AGENTS = ("jarvis", "friday", "edith", "ultron", "jocasta", "dum_e", "u")
+AGENTS = ("vision", "wanda", "jarvis", "friday", "edith", "ultron", "jocasta", "dum_e", "u")
 RATE_LIMIT = 20  # runs per automation per hour
 MAX_ACTIONS = 6
 PAUSE_AFTER = 3  # failed runs in a row before STARK AI pauses an automation
