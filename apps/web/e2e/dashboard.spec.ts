@@ -383,4 +383,10 @@ test("Vision and Wanda appear alongside the seven specialists", async ({ page })
   await expect(page.getByRole("heading",{name:"VISION",exact:true})).toBeVisible();
   await expect(page.getByRole("heading",{name:"WANDA",exact:true})).toBeVisible();
   await expect(page.getByRole("heading",{name:"ULTRON",exact:true})).toBeVisible();
+
+test("Models shows local setup while keeping OpenRouter available", async ({ page }) => {
+  await connect(page);
+  await page.getByRole("button", {name:"Models", exact:true}).click();
+  await expect(page.getByText("Local models (Ollama)", {exact:true})).toBeVisible();
+  await expect(page.getByText(/Enable Ollama with STARK_OLLAMA_URL/)).toBeVisible();
 });
