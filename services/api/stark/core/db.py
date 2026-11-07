@@ -75,6 +75,14 @@ class Turn(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class TurnVector(Base):
+    """Cached meaning vector of a chat turn, for recall by meaning (episodic memory)."""
+
+    __tablename__ = "turn_vectors"
+    turn_id: Mapped[int] = mapped_column(ForeignKey("turns.id", ondelete="CASCADE"), primary_key=True)
+    vec: Mapped[list[Any]] = mapped_column(JSON, default=list)
+
+
 class Task(Base):
     __tablename__ = "tasks"
     id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("tsk"))

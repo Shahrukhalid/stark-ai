@@ -32,7 +32,7 @@ if TYPE_CHECKING:
 
 LAYERS = {"episodic", "semantic", "agent", "project", "preference", "procedural"}
 _STOP = set("the a an and or of to in on for is are be with that this it as at by from i me my you your we".split())
-_WORD = re.compile(r"[a-z0-9][a-z0-9_\-]+")
+_WORD = re.compile(r"[^\W_][\w\-]+")  # any script (English, Urdu, ...)
 
 
 def personal_namespace(namespace: str) -> bool:
