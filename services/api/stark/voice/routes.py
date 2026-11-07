@@ -168,6 +168,12 @@ def register(app: FastAPI, api: Any, kernel: Callable[[], Any], settings: Any, a
         return {"played": False, "text": text, "mime": "audio/wav",
                 "audio": base64.b64encode(wav_bytes(bytes(pcm), rate)).decode()}
 
+    @app.get("/api/voice/level", dependencies=[api])
+    def level() -> dict[str, Any]:
+        """Live loudness for the presence and waveform (desktop microphone and speakers)."""
+        return {"playing": audio.playing, "out": round(audio.out_level, 3), "mic": round(audio.mic_level, 3),
+                "listening": audio.recording}
+
     @app.post("/api/voice/stop", dependencies=[api])
     def stop() -> dict[str, Any]:
         audio.stop_playing()

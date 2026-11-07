@@ -44,7 +44,7 @@ def test_risky_tools_always_ask():
     assert desktop.Open.risk is Risk.EXTERNAL and desktop.ClipWrite.risk is Risk.WRITE
     assert desktop.ClipRead().needs_approval(None, None) is True
     text = desktop.Open().describe(desktop.OpenInput(kind="url", target="https://example.org"), None)
-    assert "example.org" in text.action
+    assert text.action == "Open the web page https://example.org"
 
 
 async def test_open_refuses_anything_but_web_pages_workspace_files_and_app_names(settings, monkeypatch):

@@ -139,6 +139,7 @@ Each agent has its own free model with automatic fallback, its own prompt, memor
 | ![Autopilot](docs/screenshots/autopilot.png) | ![Automations](docs/screenshots/automations.png) |
 | ![Studio](docs/screenshots/studio.png) | ![Library](docs/screenshots/library.png) |
 | ![Agents](docs/screenshots/agents.png) | ![Team review](docs/screenshots/collaboration.png) |
+| ![Full-screen assistant](docs/screenshots/assistant.png) | |
 
 Screenshots use sample data.
 

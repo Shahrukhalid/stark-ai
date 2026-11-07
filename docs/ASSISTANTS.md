@@ -29,6 +29,11 @@ settings as the rest of STARK AI (no extra install).
   rose lattice with streams of energy and a circling aura. It brightens while listening, a band of light scans
   while thinking, and the jaw moves while speaking. The figures are synthetic humans (CC0 base models), not any
   real person; with reduced motion turned on in your system they stay still.
+- **Full screen.** Ctrl/⌘+Shift+Space opens a full-screen view: the presence, a live waveform, the latest reply and
+  a big talk button (hold Space). Esc closes it.
+- **Remembering conversations.** Each assistant can look back through its own past conversations
+  (memory.recall), by meaning with your Gemini key or by words without it. Never the other assistant's; nothing
+  when memory is turned off.
 - **Your computer (desktop app).** Ask "Vision, how's my battery?" or "Wanda, remind me at 6 to post the reel":
   they can check the computer's status, open a web page, a workspace file or an app, show notifications, set
   reminders and use the clipboard. Opening things and the clipboard always ask you first; they never control the

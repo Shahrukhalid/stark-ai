@@ -38,6 +38,10 @@ test("README screenshots", async ({ page }) => {
   await page.evaluate(() => window.scrollTo(0, 0));
   await page.waitForTimeout(2500); // let the particles form
   await shot(page, "command");
+  await page.keyboard.press("Control+Shift+Space"); // full-screen assistant
+  await page.waitForTimeout(2500);
+  await page.screenshot({ path: "../../docs/screenshots/assistant.png" });
+  await page.keyboard.press("Escape");
 
   // Content: schedule one for tomorrow with auto-publish, simulate one, keep one as a draft
   await page.getByRole("button", { name: "Content", exact: true }).click();

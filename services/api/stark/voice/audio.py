@@ -6,6 +6,8 @@ user holds the talk button; recording stops by itself after MAX_SECONDS.
 
 from __future__ import annotations
 
+import array
+import math
 import queue
 import threading
 from typing import Any
@@ -14,6 +16,16 @@ from .gemini import wav_bytes
 
 RATE = 16000
 MAX_SECONDS = 60
+
+
+def rms(pcm: bytes) -> float:
+    """Loudness of 16-bit audio, 0..1 (speech peaks around 0.3)."""
+    a = array.array("h", pcm[: len(pcm) // 2 * 2])
+    if not a:
+        return 0.0
+    step = max(1, len(a) // 400)
+    s = a[::step]
+    return min(1.0, math.sqrt(sum(x * x for x in s) / len(s)) / 8000)
 
 
 class AudioUnavailable(RuntimeError):
@@ -28,6 +40,9 @@ class Audio:
         self._buf = bytearray()
         self._out: Any = None
         self._stop_play = threading.Event()
+        self.mic_level = 0.0
+        self.out_level = 0.0
+        self.playing = False
 
     def _module(self):
         if self._sd is None:
@@ -43,8 +58,8 @@ class Audio:
             sd = self._module()
             sd.query_devices(kind="input")
             sd.query_devices(kind="output")
-        except AudioUnavailable as exc:
-            return False, str(exc)
+        except AudioUnavailable:
+            return False, "No audio support on this computer."
         except Exception:  # noqa: BLE001 - PortAudio raises its own error types
             return False, "No microphone or speaker found."
         return True, ""
@@ -63,6 +78,7 @@ class Audio:
             def take(indata, frames, time_info, status):  # noqa: ARG001 - PortAudio callback signature
                 if len(self._buf) < limit:
                     self._buf.extend(bytes(indata))
+                self.mic_level = rms(bytes(indata))
 
             try:
                 self._stream = sd.RawInputStream(samplerate=RATE, channels=1, dtype="int16", callback=take)
@@ -92,13 +108,14 @@ class Audio:
             except Exception:  # noqa: BLE001
                 pass
             self._stream = None
+        self.mic_level = 0.0
 
     def player(self, rate: int) -> "Player":
         """Start a player that plays audio as it is fed; a new reply or stop_playing() cuts it off."""
         sd = self._module()
         self.stop_playing()
         self._stop_play = stop = threading.Event()
-        return Player(sd, rate, stop)
+        return Player(sd, rate, stop, self)
 
     def play(self, pcm: bytes, rate: int) -> None:
         p = self.player(rate)
@@ -110,11 +127,13 @@ class Audio:
 
 
 class Player:
-    def __init__(self, sd: Any, rate: int, stop: threading.Event):
+    def __init__(self, sd: Any, rate: int, stop: threading.Event, owner: "Audio | None" = None):
         self._q: queue.Queue[bytes | None] = queue.Queue()
         self._stop = stop
 
         def run() -> None:
+            if owner:
+                owner.playing = True
             try:
                 with sd.RawOutputStream(samplerate=rate, channels=1, dtype="int16") as out:
                     step = rate // 10 * 2  # 100 ms
@@ -125,9 +144,15 @@ class Player:
                         for i in range(0, len(pcm), step):
                             if stop.is_set():
                                 break
+                            if owner:
+                                owner.out_level = rms(pcm[i:i + step])
                             out.write(pcm[i:i + step])
             except Exception:  # noqa: BLE001 - a missing speaker must not crash the engine
                 pass
+            finally:
+                if owner and owner._stop_play is stop:
+                    owner.playing = False
+                    owner.out_level = 0.0
 
         self.thread = threading.Thread(target=run, name="stark-voice-play", daemon=True)
         self.thread.start()

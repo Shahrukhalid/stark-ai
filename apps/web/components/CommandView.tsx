@@ -1,15 +1,16 @@
 "use client";
 
-import { Mic, MicOff, Plus, Send, Square, Volume2, VolumeX } from "lucide-react";
+import { Maximize2, Mic, MicOff, Plus, Send, Square, Volume2, VolumeX } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { detectWake, parseAddress } from "@/lib/addressing";
 import { useStark } from "@/lib/store";
 import type { Agent, Task, Turn } from "@/lib/types";
 import { Markdown } from "./Markdown";
-import { createRecognizer, isSpeaking, isUrdu, speak, stopSpeaking, sttSupported, ttsSupported, voiceListenStart, voiceListenStop, voiceSpeak, voiceStopSpeaking, type Recognizer, type VoiceStatus } from "@/lib/voice";
+import { createRecognizer, isSpeaking, isUrdu, speak, stopSpeaking, sttSupported, ttsSupported, voiceListenStart, voiceListenStop, voiceSpeak, voiceStopSpeaking, voiceLevel, type Recognizer, type VoiceStatus } from "@/lib/voice";
 import { ApprovalCard } from "./ApprovalCard";
 import { AgentGlyph, StateBadge, STATE_META, TaskStatus } from "./ui";
 import { ParticlePresence } from "./ParticlePresence";
+import { AssistantFocus } from "./AssistantFocus";
 import type { AvatarState } from "@/lib/particles";
 
 const ACTIVE = new Set(["thinking", "executing", "waiting_approval", "collaborating", "listening"]);
@@ -31,11 +32,18 @@ function writePref(key: string, v: boolean) {
   }
 }
 
-function CoreOrb({ agent, state, speaking }: { agent?: Agent; state: string; speaking: boolean }) {
-  const presence: AvatarState = speaking ? "speaking" : state === "listening" ? "listening" : ACTIVE.has(state) ? "thinking" : "idle";
+function presenceState(state: string, speaking: boolean): AvatarState {
+  return speaking ? "speaking" : state === "listening" ? "listening" : ACTIVE.has(state) ? "thinking" : "idle";
+}
+
+function CoreOrb({ agent, state, speaking, level, onFull }: { agent?: Agent; state: string; speaking: boolean; level: number; onFull: () => void }) {
+  const presence = presenceState(state, speaking);
   return (
     <div className="relative mx-auto w-full max-w-[300px]">
-      <ParticlePresence agent={agent} state={presence} />
+      <button type="button" className="absolute right-0 top-0 z-10 rounded-md p-1.5 text-[var(--color-mute)] hover:bg-white/5 hover:text-white" onClick={onFull} title="Full screen (Ctrl/⌘+Shift+Space)" aria-label="Full screen">
+        <Maximize2 size={14} />
+      </button>
+      <ParticlePresence agent={agent} state={presence} level={level} />
       <div className="mt-3 flex items-center justify-center gap-2">
         <span className="text-[11px] font-semibold tracking-[0.25em]" style={{ color: agent?.color || "#22d3ee" }}>
           {agent?.name || "—"}
@@ -67,6 +75,8 @@ export function CommandView({ agentId, setAgentId, openTask, prefill = "" }: { a
   const spokenFor = useRef<string | null>(null);
   const [vstatus, setVstatus] = useState<VoiceStatus | null>(null);
   const [speaking, setSpeaking] = useState(false);
+  const [level, setLevel] = useState(0);
+  const [focus, setFocus] = useState(false);
   const speakTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // The presence pulses while a reply is read aloud (about 14 characters a second, at most the spoken part).
   const showSpeaking = useCallback((text: string) => {
@@ -264,13 +274,60 @@ export function CommandView({ agentId, setAgentId, openTask, prefill = "" }: { a
     };
   }, [wakeMode]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Live loudness from the desktop microphone and speakers drives the presence; playback ending ends "speaking".
+  useEffect(() => {
+    if (!(engineVoice && vstatus?.local_audio && (speaking || pttActive))) {
+      setLevel(0);
+      return;
+    }
+    let heard = false;
+    const id = setInterval(() => {
+      voiceLevel(client)
+        .then((l) => {
+          setLevel(pttActive ? l.mic : l.out);
+          if (l.playing) heard = true;
+          else if (heard && speaking && !pttActive) {
+            if (speakTimer.current) clearTimeout(speakTimer.current);
+            setSpeaking(false);
+          }
+        })
+        .catch(() => undefined);
+    }, 90);
+    return () => clearInterval(id);
+  }, [client, engineVoice, vstatus?.local_audio, speaking, pttActive]);
+
+  useEffect(() => {
+    const key = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.code === "Space") {
+        e.preventDefault();
+        setFocus((f) => !f);
+      }
+    };
+    window.addEventListener("keydown", key);
+    return () => window.removeEventListener("keydown", key);
+  }, []);
+
   const liveState = listeningAgent === agentId || (listeningAgent === "wake" && !ACTIVE.has(agent?.live.status || "idle")) ? "listening" : agent?.live.status || "idle";
 
   return (
     <div className="grid gap-4 [&>*]:min-w-0 xl:grid-cols-[340px_1fr]">
       <div className="flex flex-col gap-4">
         <div className="panel p-5">
-          <CoreOrb agent={agent} state={liveState} speaking={speaking} />
+          <CoreOrb agent={agent} state={liveState} speaking={speaking} level={level} onFull={() => setFocus(true)} />
+          {focus && (
+            <AssistantFocus
+              agent={agent}
+              state={presenceState(liveState, speaking)}
+              level={level}
+              partial={partial}
+              reply={[...turns].reverse().find((t) => t.role === "assistant")?.content || ""}
+              listening={pttActive}
+              approvals={taskApprovals.length}
+              onTalkStart={startPtt}
+              onTalkStop={stopPtt}
+              onClose={() => setFocus(false)}
+            />
+          )}
           <p className="mt-6 text-center text-xs text-[var(--color-mute)]">{agent?.role}</p>
           {agent && (
             <p className="mt-1 text-center font-mono text-[11px] text-[var(--color-mute)]">

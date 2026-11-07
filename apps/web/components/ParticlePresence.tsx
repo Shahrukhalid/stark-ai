@@ -24,7 +24,7 @@ function readShape(id: string): AvatarShape {
 }
 
 /** The assistant's particle presence, with a Core / Female / Male switch remembered per assistant. */
-export function ParticlePresence({ agent, state }: { agent?: Agent; state: AvatarState }) {
+export function ParticlePresence({ agent, state, level = 0, large = false }: { agent?: Agent; state: AvatarState; level?: number; large?: boolean }) {
   const canvas = useRef<HTMLCanvasElement>(null);
   const scene = useRef<ParticleAvatar | null>(null);
   const id = agent?.id || "core";
@@ -51,6 +51,10 @@ export function ParticlePresence({ agent, state }: { agent?: Agent; state: Avata
     scene.current?.setState(state);
   }, [state]);
 
+  useEffect(() => {
+    scene.current?.setLevel(level);
+  }, [level]);
+
   const choose = (s: AvatarShape) => {
     setShape(s);
     scene.current?.setShape(s);
@@ -65,7 +69,7 @@ export function ParticlePresence({ agent, state }: { agent?: Agent; state: Avata
     <div className="flex flex-col items-center">
       <canvas
         ref={canvas}
-        className="aspect-[6/7] w-full max-w-[300px]"
+        className={`aspect-[6/7] w-full ${large ? "max-w-[min(560px,60vh)]" : "max-w-[300px]"}`}
         role="img"
         aria-label={`${agent?.name || "Assistant"} is ${state}`}
         onPointerMove={(e) => {

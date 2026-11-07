@@ -26,3 +26,8 @@ The feminine and masculine presence figures (`apps/web/lib/presence-data.ts`) ar
 MakeHuman base mesh and macro targets, released into the public domain under CC0 1.0 by the MakeHuman team
 (Data Collection AB, Joel Palmius, Jonas Hauquier; original work by Manuel Bastioni). They are synthetic humans and
 do not depict any real person. https://github.com/makehumancommunity/makehuman
+
+## Noto Nastaliq Urdu (SIL Open Font License 1.1)
+
+Urdu text is shown with Noto Nastaliq Urdu (`apps/web/app/fonts/`, Arabic-script subset), © Google LLC, under the
+SIL Open Font License 1.1; the license is in `apps/web/app/fonts/OFL-NotoNastaliqUrdu.txt`.

@@ -97,7 +97,6 @@ def bake(sex):
     X=(pts[:,0]-cx)*s; Y=-(pts[:,1]-(top-1.15))*s; Z=(pts[:,2]-cz)*s
     m=(Y<=118)&(np.abs(X)<=126)&(np.abs(Z)<=126)
     X,Y,Z,n,b,kind=X[m],Y[m],Z[m],n[m],b[m],kind[m]
-    print(sex, len(X), 'x',X.min().round(1),X.max().round(1),'y',Y.min().round(1),Y.max().round(1),'z',Z.min().round(1),Z.max().round(1))
     # jaw weight: below the mouth (rough), for speaking
     tr=lambda P: ((P[:,0]-cx)*s, -(P[:,1]-(top-1.15))*s, (P[:,2]-cz)*s)
     return dict(x=X,y=Y,z=Z,nx=n[:,0],ny=-n[:,1],nz=n[:,2],b=b,kind=kind), tr
@@ -132,7 +131,6 @@ out={}
 for sex in ('female','male'):
     vv=human(sex)
     pos,cn,E,top=lattice(vv,sex,0.17 if sex=='male' else 0.16)
-    print(sex,'lattice nodes',len(pos),'edges',len(E))
     d,tr=bake(sex)
     LX,LY,LZ=tr(pos)
     lb=np.clip(0.06+0.94*np.clip(cn@L,0,1)**1.9+(1-np.abs(cn[:,2]))**4*0.22,0,1)

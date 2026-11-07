@@ -258,3 +258,15 @@ export interface VoiceChoices {
   styles: string[];
   agents: Record<string, { voice: string; style: string; default: string }>;
 }
+
+export interface VoiceLevel {
+  playing: boolean;
+  out: number;
+  mic: number;
+  listening: boolean;
+}
+
+/** Live loudness of the desktop microphone and speakers. */
+export function voiceLevel(client: Client): Promise<VoiceLevel> {
+  return client.get<VoiceLevel>("/api/voice/level");
+}

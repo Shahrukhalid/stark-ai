@@ -92,7 +92,7 @@ class FakeStream:
         self.written = bytearray()
 
     def start(self):
-        self.callback(b"\x02\x00" * 16000, 16000, None, None)  # one second of sound
+        self.callback(b"\x00\x10" * 16000, 16000, None, None)  # one second of sound
 
     def stop(self):
         pass
@@ -235,3 +235,13 @@ def test_users_pick_any_voice_and_style(voice_client):
     assert c.get("/api/voice/voices").json()["agents"]["wanda"]["voice"] == "Aoede"
     assert c.put("/api/voice/prefs", json={"agent_id": "wanda", "voice": "Nope"}).status_code == 400
     assert c.put("/api/voice/prefs", json={"agent_id": "wanda"}).json()["voice"] == "Sulafat"  # reset
+
+
+def test_live_levels_for_the_presence(voice_client):
+    c, _ = voice_client
+    assert c.get("/api/voice/level").json()["listening"] is False
+    c.post("/api/voice/listen/start")
+    lv = c.get("/api/voice/level").json()
+    assert lv["listening"] and lv["mic"] > 0
+    c.post("/api/voice/listen/cancel")
+    assert c.get("/api/voice/level").json() == {"playing": False, "out": 0.0, "mic": 0.0, "listening": False}
