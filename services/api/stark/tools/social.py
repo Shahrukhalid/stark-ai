@@ -1524,36 +1524,42 @@ async def publish_item(kernel, social: "Social", settings, item_id: str, *, appr
         return ToolResult(False, "Blocked by J.A.R.V.I.S.'s review; edit it first", item["review"],
                           error="blocked")
 
-    # Enforce platform publishing policy: daily post quota, minimum interval pacing, 429 backoff
-    publishing_policy.sync_cooldowns_from_db(kernel.db)
-    with kernel.db.session() as s:
-        since_24h = utcnow() - timedelta(days=1)
-        recent_rows = s.scalars(select(ContentItem.published_at).where(
-            ContentItem.platform == item["platform"],
-            ContentItem.status == "published",
-            ContentItem.published_at >= since_24h,
-        )).all()
-        recent_ts = [r.timestamp() for r in recent_rows if r is not None]
+    name = PLATFORMS[item["platform"]]["name"]
+    adapter = social.adapter(item["platform"])
 
-    elig = publishing_policy.check_eligibility(item["platform"], recent_ts)
-    if not elig["eligible"]:
-        return ToolResult(False, f"Publishing blocked by safety policy: {elig['reason']}", elig,
-                          error="publishing_policy_violation")
+    # If publishing live via an external platform adapter, enforce safety policy and deduplication
+    if adapter is not None:
+        publishing_policy.sync_cooldowns_from_db(kernel.db)
+        with kernel.db.session() as s:
+            since_24h = utcnow() - timedelta(days=1)
+            recent_rows = s.scalars(select(ContentItem.published_at).where(
+                ContentItem.platform == item["platform"],
+                ContentItem.status == "published",
+                ContentItem.simulated.is_(False),
+                ContentItem.published_at >= since_24h,
+            )).all()
+            recent_ts = [r.timestamp() for r in recent_rows if r is not None]
 
-    # Content deduplication check: avoid posting identical content to the same platform within 7 days
-    curr_fp = publishing_policy.content_hash(item["text"])
-    with kernel.db.session() as s:
-        since_7d = utcnow() - timedelta(days=7)
-        past_items = s.scalars(select(ContentItem.text).where(
-            ContentItem.platform == item["platform"],
-            ContentItem.status == "published",
-            ContentItem.published_at >= since_7d,
-            ContentItem.id != item_id,
-        )).all()
-        for past_text in past_items:
-            if publishing_policy.content_hash(past_text) == curr_fp:
-                return ToolResult(False, "Duplicate post prevented: identical content was published to this platform within the last 7 days.",
-                                  error="duplicate_post")
+        elig = publishing_policy.check_eligibility(item["platform"], recent_ts)
+        if not elig["eligible"]:
+            return ToolResult(False, f"Publishing blocked by safety policy: {elig['reason']}", elig,
+                              error="publishing_policy_violation")
+
+        # Content deduplication check: avoid posting identical content to the same platform within 7 days
+        curr_fp = publishing_policy.content_hash(item["text"])
+        with kernel.db.session() as s:
+            since_7d = utcnow() - timedelta(days=7)
+            past_items = s.scalars(select(ContentItem.text).where(
+                ContentItem.platform == item["platform"],
+                ContentItem.status == "published",
+                ContentItem.simulated.is_(False),
+                ContentItem.published_at >= since_7d,
+                ContentItem.id != item_id,
+            )).all()
+            for past_text in past_items:
+                if publishing_policy.content_hash(past_text) == curr_fp:
+                    return ToolResult(False, "Duplicate post prevented: identical content was published to this platform within the last 7 days.",
+                                      error="duplicate_post")
 
     # Claim the item atomically: a second publish of the same item, or an edit, can't run concurrently.
     with kernel.db.session() as s:
@@ -1563,8 +1569,7 @@ async def publish_item(kernel, social: "Social", settings, item_id: str, *, appr
     if claimed != 1:
         return ToolResult(False, "Item changed or is already being published; nothing was sent",
                           error="not_publishable")
-    name = PLATFORMS[item["platform"]]["name"]
-    adapter = social.adapter(item["platform"])
+
     if adapter is None:
         data = _update(kernel, item_id, status="published", simulated=True, check=check, auto_publish=False,
                        external_id=f"sim-{item['id']}", external_url=None, published_at=utcnow(), error=None)
