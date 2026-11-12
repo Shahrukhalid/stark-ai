@@ -5,7 +5,6 @@ name: Tag release
 on:
   push:
     branches: [main]
-    paths: [services/api/stark/__init__.py]
   workflow_dispatch:
     inputs:
       target_commit:
