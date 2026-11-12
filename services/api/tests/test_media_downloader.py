@@ -240,24 +240,182 @@ def test_real_db_persistent_queue_recovery(tmp_path: Path):
 
 
 def test_dns_rebinding_socket_protection():
-    """Verifies that _safe_create_connection blocks restricted IPs and ports."""
+    """Verifies that _safe_create_connection blocks restricted IPs, IPv6, mapped IPs, and internal domains."""
     from stark.media_downloader import _safe_create_connection, ssrf_socket_guard
 
     with ssrf_socket_guard():
-        # Block connection to localhost / loopback
-        with pytest.raises(ConnectionRefusedError, match="restricted IP"):
+        # Block connection to localhost / loopback IPv4
+        with pytest.raises(ConnectionRefusedError, match="restricted"):
             _safe_create_connection(("127.0.0.1", 8080))
 
+        # Block connection to IPv6 loopback
+        with pytest.raises(ConnectionRefusedError, match="restricted"):
+            _safe_create_connection(("::1", 8080))
+
+        # Block IPv4-mapped IPv6 loopback and metadata
+        with pytest.raises(ConnectionRefusedError, match="restricted"):
+            _safe_create_connection(("::ffff:127.0.0.1", 8080))
+
+        with pytest.raises(ConnectionRefusedError, match="restricted"):
+            _safe_create_connection(("::ffff:169.254.169.254", 80))
+
         # Block connection to cloud metadata
-        with pytest.raises(ConnectionRefusedError, match="restricted IP"):
+        with pytest.raises(ConnectionRefusedError, match="restricted"):
             _safe_create_connection(("169.254.169.254", 80))
 
-        # Block connection to restricted port
+        # Block connection to internal domain names
+        with pytest.raises(ConnectionRefusedError, match="internal domain"):
+            _safe_create_connection(("host.internal", 80))
+
+        with pytest.raises(ConnectionRefusedError, match="internal domain"):
+            _safe_create_connection(("app.localhost", 80))
+
+        # Block connection to restricted ports
         with pytest.raises(ConnectionRefusedError, match="restricted port"):
             _safe_create_connection(("93.184.216.34", 22))
 
         with pytest.raises(ConnectionRefusedError, match="restricted port"):
             _safe_create_connection(("93.184.216.34", 6379))
+
+
+def test_playlist_partial_cancellation_preserves_completed_files(tmp_path: Path):
+    """Verifies that cancelling an in-flight playlist download preserves already completed entries."""
+    folder = tmp_path / "media" / "video"
+    folder.mkdir(parents=True, exist_ok=True)
+
+    downloader = MediaDownloader(folder, max_concurrent=1)
+    try:
+        job = downloader._new_job("https://example.com/playlist", is_playlist=True, playlist_count=3)
+        job_id = job["id"]
+
+        # Item 1 finishes downloading and is verified
+        f1 = folder / "item_01.mp4"
+        f1.write_bytes(b"completed video 1 data")
+        job["files"].append("item_01.mp4")
+        job["completed_files"].add(str(f1.resolve()))
+
+        # Item 2 is in-progress with a .part file
+        f2_part = folder / "item_02.mp4.part"
+        f2_part.write_bytes(b"partial video 2 in-flight")
+        job["active_temp_files"].add(str(f2_part.resolve()))
+
+        assert f1.is_file() and f2_part.is_file()
+
+        # Cancellation occurs during Item 2
+        res = downloader.cancel(job_id)
+        assert res is True
+        assert downloader.jobs[job_id]["status"] == "cancelled"
+
+        # Verification: Completed Item 1 MUST be preserved on disk
+        assert f1.is_file(), "Completed playlist item 1 was improperly deleted!"
+        assert f1.read_bytes() == b"completed video 1 data"
+
+        # Verification: Incomplete Item 2 .part file MUST be cleaned up
+        assert not f2_part.exists(), "Incomplete .part file was not cleaned up!"
+    finally:
+        downloader._queue_running = False
+
+
+def test_playlist_failure_preserves_completed_files(tmp_path: Path):
+    """Verifies that a failure during later playlist items preserves earlier completed files."""
+    folder = tmp_path / "media" / "video"
+    folder.mkdir(parents=True, exist_ok=True)
+
+    downloader = MediaDownloader(folder, max_concurrent=1)
+    try:
+        job = downloader._new_job("https://example.com/playlist", is_playlist=True, playlist_count=2)
+        job_id = job["id"]
+
+        # Item 1 finishes
+        f1 = folder / "track_01.mp4"
+        f1.write_bytes(b"track 1 content")
+        job["files"].append("track_01.mp4")
+        job["completed_files"].add(str(f1.resolve()))
+
+        # Item 2 fails with partial file
+        f2_part = folder / "track_02.mp4.part"
+        f2_part.write_bytes(b"track 2 broken download")
+        job["active_temp_files"].add(str(f2_part.resolve()))
+
+        # Trigger cleanup simulating failure
+        job["status"] = "failed"
+        job["error"] = "Network socket timeout on entry 2"
+        downloader._cleanup_partial_files(job_id)
+
+        # Track 1 must remain intact; Track 2 partial must be removed
+        assert f1.is_file()
+        assert not f2_part.exists()
+    finally:
+        downloader._queue_running = False
+
+
+def test_strict_file_ownership_no_substring_deletion(tmp_path: Path):
+    """Verifies that cleanup uses strict file ownership and never deletes files matching a substring."""
+    folder = tmp_path / "media" / "video"
+    folder.mkdir(parents=True, exist_ok=True)
+
+    downloader = MediaDownloader(folder, max_concurrent=1)
+    try:
+        # Create an unrelated file containing "clip" in the name
+        unrelated = folder / "clip_archive_master.mp4"
+        unrelated.write_bytes(b"important master video")
+
+        # Create a job with custom_name "clip"
+        job = downloader._new_job("https://example.com/clip", custom_name="clip")
+        job["status"] = "cancelled"
+
+        downloader._cleanup_partial_files(job["id"], name_hint="clip")
+
+        # The unrelated file MUST NOT be deleted
+        assert unrelated.is_file(), "File was improperly deleted by substring matching!"
+        assert unrelated.read_bytes() == b"important master video"
+    finally:
+        downloader._queue_running = False
+
+
+def test_simultaneous_downloads_cancellation_isolation(tmp_path: Path):
+    """Verifies simultaneous downloads: cancelling Job A never affects Job B's active or completed files."""
+    folder = tmp_path / "media" / "video"
+    folder.mkdir(parents=True, exist_ok=True)
+
+    downloader = MediaDownloader(folder, max_concurrent=2)
+    try:
+        job_a = downloader._new_job("https://example.com/a")
+        job_b = downloader._new_job("https://example.com/b")
+
+        # Job A has completed file and temp file
+        a_done = folder / "a_done.mp4"
+        a_done.write_bytes(b"a done")
+        job_a["completed_files"].add(str(a_done.resolve()))
+        job_a["files"].append("a_done.mp4")
+
+        a_part = folder / "a_temp.part"
+        a_part.write_bytes(b"a part")
+        job_a["active_temp_files"].add(str(a_part.resolve()))
+
+        # Job B has completed file and temp file
+        b_done = folder / "b_done.mp4"
+        b_done.write_bytes(b"b done")
+        job_b["completed_files"].add(str(b_done.resolve()))
+        job_b["files"].append("b_done.mp4")
+
+        b_part = folder / "b_temp.part"
+        b_part.write_bytes(b"b part")
+        job_b["active_temp_files"].add(str(b_part.resolve()))
+
+        # Cancel Job A
+        downloader.cancel(job_a["id"])
+
+        # Job A results
+        assert a_done.is_file(), "Job A completed file was lost!"
+        assert not a_part.exists(), "Job A partial file was not cleaned!"
+
+        # Job B results: ALL files must be 100% intact!
+        assert b_done.is_file(), "Job B completed file was affected by Job A cancellation!"
+        assert b_part.is_file(), "Job B in-flight partial file was affected by Job A cancellation!"
+        assert b_part.read_bytes() == b"b part"
+    finally:
+        downloader._queue_running = False
 
 
 def test_playlist_full_file_verification(tmp_path: Path):

@@ -742,3 +742,36 @@ async def test_concurrent_publishing_quota_and_dedup_safety(settings):
     assert blocked[0].error in ("duplicate_post", "publishing_policy_violation", "not_publishable")
     assert len(calls) == 1, f"Expected exactly 1 external network call, got {len(calls)}"
 
+
+def test_interprocess_platform_lock_concurrency(tmp_path: Path):
+    """Verifies that _interprocess_platform_lock prevents concurrent cross-process access on the same platform."""
+    from stark.tools.social import _interprocess_platform_lock
+    import threading
+    import time
+
+    lock_dir = tmp_path / "locks"
+    acquired_order = []
+    barrier = threading.Barrier(2)
+
+    def worker(worker_id: int):
+        barrier.wait()
+        with _interprocess_platform_lock("bluesky", lock_dir=lock_dir, timeout_s=3.0):
+            acquired_order.append(f"start_{worker_id}")
+            time.sleep(0.1)
+            acquired_order.append(f"end_{worker_id}")
+
+    t1 = threading.Thread(target=worker, args=(1,))
+    t2 = threading.Thread(target=worker, args=(2,))
+    t1.start()
+    t2.start()
+    t1.join()
+    t2.join()
+
+    assert len(acquired_order) == 4
+    # The lock must strictly serialize access: start_A, end_A, start_B, end_B (never interleaved start_A, start_B!)
+    first_worker = acquired_order[0].split("_")[1]
+    second_worker = acquired_order[2].split("_")[1]
+    assert first_worker != second_worker
+    assert acquired_order == [f"start_{first_worker}", f"end_{first_worker}", f"start_{second_worker}", f"end_{second_worker}"]
+
+
