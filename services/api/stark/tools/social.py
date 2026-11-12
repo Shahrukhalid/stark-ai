@@ -20,8 +20,12 @@ Safety rules enforced in code (not just in prompts)
 from __future__ import annotations
 
 import asyncio
+from contextlib import contextmanager
 import hashlib
+import os
+from pathlib import Path
 import re
+import sys
 import threading
 import unicodedata
 import time
@@ -1512,6 +1516,58 @@ def _get_platform_publish_lock(platform: str) -> asyncio.Lock:
         return _PLATFORM_PUBLISH_LOCKS[platform]
 
 
+@contextmanager
+def _interprocess_platform_lock(platform: str, lock_dir: Path | None = None, timeout_s: float = 15.0):
+    """Cross-process and cross-instance file lock ensuring multi-process concurrency safety.
+    Guarantees that multiple instances/processes cannot race on quotas, deduplication, or atomic claims.
+    """
+    if lock_dir is None:
+        base = os.environ.get("STARK_DATA") or os.environ.get("STARK_DESKTOP_DATA") or str(Path.home() / ".stark")
+        lock_dir = Path(base) / "locks"
+    try:
+        lock_dir.mkdir(parents=True, exist_ok=True)
+        lock_file = lock_dir / f"publish_{platform}.lock"
+        fh = open(lock_file, "a+b")
+    except Exception:
+        yield
+        return
+
+    start = time.monotonic()
+    acquired = False
+    try:
+        while not acquired:
+            try:
+                fh.seek(0)
+                if sys.platform == "win32":
+                    import msvcrt
+                    msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                acquired = True
+            except (OSError, IOError):
+                if time.monotonic() - start > timeout_s:
+                    raise TimeoutError(f"Could not acquire cross-process publishing lock for {platform} within {timeout_s}s")
+                time.sleep(0.05)
+        yield
+    finally:
+        if acquired:
+            try:
+                fh.seek(0)
+                if sys.platform == "win32":
+                    import msvcrt
+                    msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+            except OSError:
+                pass
+        try:
+            fh.close()
+        except OSError:
+            pass
+
+
 async def publish_item(kernel, social: "Social", settings, item_id: str, *, approved_fp: str | None,
                        actor: str) -> ToolResult:
     """Publish one queued item. ``approved_fp``: fingerprint of the content the human approved (None = no
@@ -1542,49 +1598,51 @@ async def publish_item(kernel, social: "Social", settings, item_id: str, *, appr
     # Concurrency-safe publishing gate: lock prevents race conditions on quotas and deduplication
     lock = _get_platform_publish_lock(item["platform"])
     async with lock:
-        # If publishing live via an external platform adapter, enforce safety policy and deduplication
-        if adapter is not None:
-            publishing_policy.sync_cooldowns_from_db(kernel.db)
+        lock_dir = Path(settings.data_dir) / "locks" if hasattr(settings, "data_dir") and settings.data_dir else None
+        with _interprocess_platform_lock(item["platform"], lock_dir=lock_dir):
+            # If publishing live via an external platform adapter, enforce safety policy and deduplication
+            if adapter is not None:
+                publishing_policy.sync_cooldowns_from_db(kernel.db)
+                with kernel.db.session() as s:
+                    since_24h = utcnow() - timedelta(days=1)
+                    recent_rows = s.execute(select(ContentItem.published_at, ContentItem.updated_at).where(
+                        ContentItem.platform == item["platform"],
+                        ContentItem.status.in_(["published", "publishing"]),
+                        ContentItem.simulated.is_(False),
+                        ContentItem.updated_at >= since_24h,
+                        ContentItem.id != item_id,
+                    )).all()
+                    recent_ts = [(r[0] or r[1] or utcnow()).timestamp() for r in recent_rows]
+
+                elig = publishing_policy.check_eligibility(item["platform"], recent_ts)
+                if not elig["eligible"]:
+                    return ToolResult(False, f"Publishing blocked by safety policy: {elig['reason']}", elig,
+                                      error="publishing_policy_violation")
+
+                # Content deduplication check: avoid posting identical content to the same platform within 7 days
+                curr_fp = publishing_policy.content_hash(item["text"])
+                with kernel.db.session() as s:
+                    since_7d = utcnow() - timedelta(days=7)
+                    past_items = s.scalars(select(ContentItem.text).where(
+                        ContentItem.platform == item["platform"],
+                        ContentItem.status.in_(["published", "publishing"]),
+                        ContentItem.simulated.is_(False),
+                        ContentItem.updated_at >= since_7d,
+                        ContentItem.id != item_id,
+                    )).all()
+                    for past_text in past_items:
+                        if publishing_policy.content_hash(past_text) == curr_fp:
+                            return ToolResult(False, "Duplicate post prevented: identical content was published to this platform within the last 7 days.",
+                                              error="duplicate_post")
+
+            # Claim the item atomically: a second publish of the same item, or an edit, can't run concurrently.
             with kernel.db.session() as s:
-                since_24h = utcnow() - timedelta(days=1)
-                recent_rows = s.execute(select(ContentItem.published_at, ContentItem.updated_at).where(
-                    ContentItem.platform == item["platform"],
-                    ContentItem.status.in_(["published", "publishing"]),
-                    ContentItem.simulated.is_(False),
-                    ContentItem.updated_at >= since_24h,
-                    ContentItem.id != item_id,
-                )).all()
-                recent_ts = [(r[0] or r[1] or utcnow()).timestamp() for r in recent_rows]
-
-            elig = publishing_policy.check_eligibility(item["platform"], recent_ts)
-            if not elig["eligible"]:
-                return ToolResult(False, f"Publishing blocked by safety policy: {elig['reason']}", elig,
-                                  error="publishing_policy_violation")
-
-            # Content deduplication check: avoid posting identical content to the same platform within 7 days
-            curr_fp = publishing_policy.content_hash(item["text"])
-            with kernel.db.session() as s:
-                since_7d = utcnow() - timedelta(days=7)
-                past_items = s.scalars(select(ContentItem.text).where(
-                    ContentItem.platform == item["platform"],
-                    ContentItem.status.in_(["published", "publishing"]),
-                    ContentItem.simulated.is_(False),
-                    ContentItem.updated_at >= since_7d,
-                    ContentItem.id != item_id,
-                )).all()
-                for past_text in past_items:
-                    if publishing_policy.content_hash(past_text) == curr_fp:
-                        return ToolResult(False, "Duplicate post prevented: identical content was published to this platform within the last 7 days.",
-                                          error="duplicate_post")
-
-        # Claim the item atomically: a second publish of the same item, or an edit, can't run concurrently.
-        with kernel.db.session() as s:
-            claimed = s.execute(update(ContentItem).where(
-                ContentItem.id == item_id, ContentItem.status == item["status"], ContentItem.paused.is_(False),
-                ContentItem.text == item["text"]).values(status="publishing", updated_at=utcnow())).rowcount
-        if claimed != 1:
-            return ToolResult(False, "Item changed or is already being published; nothing was sent",
-                              error="not_publishable")
+                claimed = s.execute(update(ContentItem).where(
+                    ContentItem.id == item_id, ContentItem.status == item["status"], ContentItem.paused.is_(False),
+                    ContentItem.text == item["text"]).values(status="publishing", updated_at=utcnow())).rowcount
+            if claimed != 1:
+                return ToolResult(False, "Item changed or is already being published; nothing was sent",
+                                  error="not_publishable")
 
     if adapter is None:
         data = _update(kernel, item_id, status="published", simulated=True, check=check, auto_publish=False,

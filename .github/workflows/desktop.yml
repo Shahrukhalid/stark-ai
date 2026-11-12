@@ -144,8 +144,11 @@ jobs:
             cp "$found" "release_assets/$old_alias"
           done
 
-          echo "All 3 installers verified. Total assets ready for release: $(ls release_assets | wc -l)"
-      - name: Publish GitHub Release
+          echo "All 3 installers verified. Generating cryptographic SHA-256 checksums..."
+          (cd release_assets && sha256sum * > SHA256SUMS.txt)
+          (cd release_assets && sha256sum -c SHA256SUMS.txt)
+          echo "Total assets ready for release: $(ls release_assets | wc -l)"
+      - name: Publish GitHub Release Transactionally
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -156,10 +159,48 @@ jobs:
             NOTES_ARGS=(--notes "Desktop installers for macOS and Windows: download, install, open STARK AI and follow the setup.")
           fi
 
-          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --title "STARK AI ${GITHUB_REF_NAME#v}" "${NOTES_ARGS[@]}"
-          
+          echo "Ensuring draft release exists for $GITHUB_REF_NAME..."
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || \
+            gh release create "$GITHUB_REF_NAME" --draft --title "STARK AI ${GITHUB_REF_NAME#v}" "${NOTES_ARGS[@]}"
+
+          echo "Uploading all assets to draft release..."
           for f in release_assets/*; do
-            echo "Uploading $f to release $GITHUB_REF_NAME..."
+            echo "Uploading $f to draft release $GITHUB_REF_NAME..."
             gh release upload "$GITHUB_REF_NAME" "$f" --clobber
           done
-          echo "Successfully published release $GITHUB_REF_NAME with all verified assets."
+
+          echo "Verifying remote release asset integrity, counts, and checksums..."
+          python3 -c "
+          import json, subprocess, sys
+
+          tag = '$GITHUB_REF_NAME'
+          out = subprocess.check_output(['gh', 'release', 'view', tag, '--json', 'assets']).decode()
+          data = json.loads(out)
+          assets = {a['name']: a['size'] for a in data.get('assets', [])}
+
+          expected_assets = [
+              'STARK-AI-Windows-Setup.exe',
+              'STARK-AI-macOS-AppleSilicon.dmg',
+              'STARK-AI-macOS-Intel.dmg',
+              'STARK-OS-Windows-Setup.exe',
+              'STARK-OS-macOS-AppleSilicon.dmg',
+              'STARK-OS-macOS-Intel.dmg',
+              'SHA256SUMS.txt'
+          ]
+
+          for name in expected_assets:
+              if name not in assets:
+                  print(f'CRITICAL ERROR: {name} is missing from draft release {tag}!')
+                  sys.exit(1)
+              min_size = 50 if name.endswith('.txt') else 10485760
+              if assets[name] < min_size:
+                  print(f'CRITICAL ERROR: {name} size ({assets[name]}) is below minimum ({min_size})!')
+                  sys.exit(1)
+              print(f'Verified draft asset: {name} ({assets[name]} bytes)')
+
+          print(f'All {len(expected_assets)} assets verified on draft release {tag}.')
+          "
+
+          echo "Publishing verified draft release $GITHUB_REF_NAME to public..."
+          gh release edit "$GITHUB_REF_NAME" --draft=false
+          echo "Successfully and transactionally published release $GITHUB_REF_NAME with all verified assets."

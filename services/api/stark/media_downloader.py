@@ -24,6 +24,8 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
+import urllib.error
+import urllib.request
 from urllib.parse import urlsplit
 
 logger = logging.getLogger("stark.media_downloader")
@@ -98,10 +100,15 @@ def check_disk_space(target_folder: Path, min_mb: int = 500) -> None:
 
 def _is_ip_allowed(ip_str: str) -> bool:
     """Checks whether an IP address is a safe, publicly routable destination."""
-    if ip_str in _METADATA_IPS:
+    clean_ip = str(ip_str or "").strip().lower().strip("[]")
+    if clean_ip in _METADATA_IPS:
         return False
     try:
-        ip = ipaddress.ip_address(ip_str)
+        ip = ipaddress.ip_address(clean_ip)
+        # Check IPv4 mapped in IPv6 (e.g. ::ffff:127.0.0.1 or ::ffff:169.254.169.254)
+        if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped:
+            if not _is_ip_allowed(str(ip.ipv4_mapped)):
+                return False
         if (
             ip.is_private
             or ip.is_loopback
@@ -198,35 +205,90 @@ def ssrf_socket_guard():
         _SSRF_GUARD_ACTIVE.active = False
 
 
-def _safe_create_connection(address, *args, **kwargs):
-    """Enforces SSRF and DNS rebinding protections during media acquisition operations."""
+def _safe_create_connection(address, timeout=socket._GLOBAL_DEFAULT_TIMEOUT, source_address=None, *args, **kwargs):
+    """Enforces SSRF and DNS rebinding protections during media acquisition operations.
+    Directly connects to verified publicly routable destination IP, eliminating TOCTOU DNS rebinding races.
+    """
     if not getattr(_SSRF_GUARD_ACTIVE, "active", False):
-        return _ORIG_CREATE_CONNECTION(address, *args, **kwargs)
+        return _ORIG_CREATE_CONNECTION(address, timeout=timeout, source_address=source_address, *args, **kwargs)
 
-    if isinstance(address, (list, tuple)) and len(address) >= 2:
-        host, port = address[0], address[1]
-        if isinstance(port, int) and port in _DISALLOWED_PORTS:
-            raise ConnectionRefusedError(f"Connection to restricted port {port} is blocked by SSRF defense.")
+    if not (isinstance(address, (list, tuple)) and len(address) >= 2):
+        return _ORIG_CREATE_CONNECTION(address, timeout=timeout, source_address=source_address, *args, **kwargs)
 
-        host_str = str(host).lower().strip()
-        # Direct IP check
+    host, port = address[0], address[1]
+    if isinstance(port, int) and port in _DISALLOWED_PORTS:
+        raise ConnectionRefusedError(f"Connection to restricted port {port} is blocked by SSRF defense.")
+
+    host_str = str(host).lower().strip("[]")
+
+    # Reject known internal/cloud hostnames immediately
+    if (
+        host_str in _DISALLOWED_DOMAINS
+        or host_str.endswith(".localhost")
+        or host_str.endswith(".local")
+        or host_str.endswith(".internal")
+        or host_str.endswith(".corp")
+        or host_str.endswith(".lan")
+        or host_str.endswith(".onion")
+    ):
+        raise ConnectionRefusedError(f"SSRF defense blocked connection to internal domain {host_str}")
+
+    # Resolve destination using getaddrinfo
+    try:
+        addr_infos = socket.getaddrinfo(host_str, port, family=socket.AF_UNSPEC, type=socket.SOCK_STREAM)
+    except socket.gaierror as exc:
+        raise ConnectionRefusedError(f"DNS resolution failed for {host_str}: {exc}") from exc
+
+    if not addr_infos:
+        raise ConnectionRefusedError(f"No address records found for {host_str}")
+
+    # Validate all resolved IPs and filter only safe, publicly routable destinations
+    safe_candidates = []
+    for res in addr_infos:
+        cand_ip = res[4][0]
+        if _is_ip_allowed(cand_ip):
+            safe_candidates.append(res)
+        else:
+            logger.warning(f"SSRF guard filtered out restricted IP {cand_ip} for destination {host_str}")
+
+    if not safe_candidates:
+        raise ConnectionRefusedError(
+            f"DNS rebinding blocked: destination {host_str} resolved only to restricted addresses"
+        )
+
+    # Connect directly to the validated sockaddr, avoiding any secondary DNS lookup (TOCTOU elimination)
+    last_err = None
+    for res in safe_candidates:
+        af, socktype, proto, canonname, sa = res
+        sock = None
         try:
-            ip = ipaddress.ip_address(host_str)
-            if not _is_ip_allowed(str(ip)):
-                raise ConnectionRefusedError(f"Connection to restricted IP {host_str} is blocked by SSRF defense.")
-        except ValueError:
-            # Domain check: resolve and verify every address to defeat DNS rebinding
-            try:
-                infos = socket.getaddrinfo(host_str, port, family=socket.AF_UNSPEC, type=socket.SOCK_STREAM)
-                for item in infos:
-                    resolved_ip = item[4][0]
-                    if not _is_ip_allowed(resolved_ip):
-                        raise ConnectionRefusedError(
-                            f"DNS rebinding blocked: {host_str} resolved to restricted IP {resolved_ip}"
-                        )
-            except socket.gaierror:
-                pass
-    return _ORIG_CREATE_CONNECTION(address, *args, **kwargs)
+            sock = socket.socket(af, socktype, proto)
+            if timeout is not socket._GLOBAL_DEFAULT_TIMEOUT:
+                sock.settimeout(timeout)
+            if source_address:
+                sock.bind(source_address)
+            sock.connect(sa)
+
+            # Final validation: check actual connected peer IP on socket
+            peer_ip = sock.getpeername()[0]
+            if not _is_ip_allowed(peer_ip):
+                sock.close()
+                raise ConnectionRefusedError(
+                    f"SSRF guard: connected peer IP {peer_ip} is restricted!"
+                )
+
+            return sock
+        except Exception as err:
+            last_err = err
+            if sock is not None:
+                try:
+                    sock.close()
+                except Exception:
+                    pass
+
+    if last_err:
+        raise last_err
+    raise ConnectionRefusedError(f"Failed to connect to validated destination {host_str}:{port}")
 
 
 def install_ytdlp_ssrf_guards() -> None:
@@ -238,6 +300,19 @@ def install_ytdlp_ssrf_guards() -> None:
 
         # Install socket connection guard against DNS rebinding
         socket.create_connection = _safe_create_connection
+
+        # Also hook standard library urllib redirect handler
+        _orig_urllib_redirect = urllib.request.HTTPRedirectHandler.redirect_request
+
+        def _safe_urllib_redirect(self, req, fp, code, msg, headers, newurl):
+            if getattr(_SSRF_GUARD_ACTIVE, "active", False) and newurl:
+                try:
+                    validate_url(newurl, resolve_dns=True)
+                except Exception as exc:
+                    raise urllib.error.URLError(f"SSRF redirect blocked: {exc}") from exc
+            return _orig_urllib_redirect(self, req, fp, code, msg, headers, newurl)
+
+        urllib.request.HTTPRedirectHandler.redirect_request = _safe_urllib_redirect
 
         if _ytdlp_common and _ytdlp_urllib:
             orig_send = _ytdlp_common.RequestDirector.send
@@ -427,6 +502,8 @@ class MediaDownloader:
             "playlist_index": 0,
             "files": [],
             "active_files": set(),
+            "active_temp_files": set(),
+            "completed_files": set(),
             **kw,
         }
         with self._lock:
@@ -445,72 +522,93 @@ class MediaDownloader:
             abort = self._abort_events.get(job_id)
             if abort:
                 abort.set()
-        self._cleanup_partial_files(job_id, job.get("custom_name") or job.get("output"))
+        self._cleanup_partial_files(job_id)
         self._persist_job(job)
         return True
 
-    def _cleanup_partial_files(self, job_id: str, name_hint: str | None = None) -> None:
-        """Removes temporary and incomplete downloads belonging strictly to this job without affecting concurrent jobs."""
+    def _cleanup_partial_files(self, job_id: str, *args, **kwargs) -> None:
+        """Removes temporary and incomplete downloads belonging strictly to this job.
+        Strict per-job file ownership: never deletes unrelated files, never deletes completed
+        playlist items, and never relies on substring filename matching.
+        """
         try:
             if not self.folder.exists():
                 return
             with self._lock:
                 job = self.jobs.get(job_id)
-                tracked_files = set(job.get("active_files") or []) if job else set()
-                # Gather files and identifiers belonging to other active downloads to guarantee they are never deleted
-                protected_files = set()
-                protected_stems = set()
-                for jid, other in self.jobs.items():
-                    if jid != job_id and other.get("status") in ("queued", "running"):
-                        if other.get("custom_name"):
-                            protected_stems.add(safe_filename(other["custom_name"]).lower())
-                        if other.get("video_id"):
-                            protected_stems.add(other["video_id"].lower())
-                        if other.get("output"):
-                            protected_files.add(Path(other["output"]).name.lower())
-                        for af in (other.get("active_files") or []):
-                            protected_files.add(Path(af).name.lower())
+                if not job:
+                    return
 
-            # 1. Remove tracked active files and their part/temp files specifically recorded for this job
-            for fpath_str in list(tracked_files):
-                p = Path(fpath_str)
-                if p.is_file() and p.name.lower() not in protected_files:
+                # Explicitly owned temporary / in-flight files for this specific job
+                tracked_temps = set(job.get("active_temp_files") or set())
+                tracked_temps.update(job.get("active_files") or set())
+                for ext in (".part", ".temp", ".ytdl"):
+                    tracked_temps.add(str((self.folder / f"{job_id}{ext}").resolve()))
+
+                completed_files = {str(Path(p).resolve()) for p in (job.get("completed_files") or set())}
+                for f in (job.get("files") or []):
+                    completed_files.add(str((self.folder / f).resolve()))
+                if job.get("output") and job.get("status") == "done":
+                    completed_files.add(str((self.folder / job["output"]).resolve()))
+
+                # Collect protected paths belonging to all OTHER jobs
+                protected_paths = set()
+                for jid, other in self.jobs.items():
+                    if jid != job_id:
+                        for cf in other.get("completed_files", set()):
+                            protected_paths.add(str(Path(cf).resolve()))
+                        for af in other.get("active_temp_files", set()):
+                            protected_paths.add(str(Path(af).resolve()))
+                        for af in other.get("active_files", set()):
+                            protected_paths.add(str(Path(af).resolve()))
+                        for f in other.get("files", []):
+                            protected_paths.add(str((self.folder / f).resolve()))
+                        if other.get("output"):
+                            protected_paths.add(str((self.folder / other["output"]).resolve()))
+
+            target_folder_res = self.folder.resolve()
+
+            # Iterate ONLY over explicitly registered in-flight temp paths for THIS job
+            for fpath_str in list(tracked_temps):
+                p = Path(fpath_str).resolve()
+                p_str = str(p)
+
+                # Never delete a file that has been completed and verified for this job
+                if p_str in completed_files:
+                    continue
+                # Never delete a file owned or protected by another job
+                if p_str in protected_paths:
+                    continue
+                # Ensure the path is strictly within our target download folder
+                try:
+                    p.relative_to(target_folder_res)
+                except ValueError:
+                    continue
+
+                # Delete incomplete/part files
+                if p.suffix in (".part", ".ytdl", ".temp") or p.name.endswith(".part"):
                     try:
                         p.unlink(missing_ok=True)
                     except OSError:
                         pass
+                elif p.is_file() and p_str not in completed_files:
+                    # Incomplete media file that was interrupted before completion
+                    try:
+                        p.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+
+                # Also delete companion part/temp variants of this tracked path
                 for ext in (".part", ".ytdl", ".temp"):
                     part_p = p.with_name(p.name + ext)
-                    if part_p.is_file() and part_p.name.lower() not in protected_files:
-                        try:
-                            part_p.unlink(missing_ok=True)
-                        except OSError:
-                            pass
-
-            # 2. Check job_id, name_hint, and video_id for partial files matching this job
-            hints = set()
-            hints.add(job_id.lower())
-            if name_hint:
-                hints.add(safe_filename(name_hint).lower())
-            if job and job.get("video_id"):
-                hints.add(str(job["video_id"]).lower())
-
-            if hints:
-                for p in self.folder.iterdir():
-                    if not p.is_file():
-                        continue
-                    p_name_lower = p.name.lower()
-                    if not any(h in p_name_lower for h in hints):
-                        continue
-                    # Never delete files belonging to other concurrent jobs
-                    if any(prot in p_name_lower for prot in protected_stems) or p_name_lower in protected_files:
-                        continue
-                    # Delete only incomplete or temporary download files
-                    if p.suffix in (".part", ".ytdl", ".temp") or (
-                        p.suffix in (".mp4", ".mp3", ".webm", ".mkv") and job and job.get("status") == "cancelled"
+                    part_str = str(part_p)
+                    if (
+                        part_p.is_file()
+                        and part_str not in completed_files
+                        and part_str not in protected_paths
                     ):
                         try:
-                            p.unlink(missing_ok=True)
+                            part_p.unlink(missing_ok=True)
                         except OSError:
                             pass
         except Exception as exc:
@@ -692,10 +790,14 @@ class MediaDownloader:
             status = d.get("status")
             filename = d.get("filename")
             if filename:
-                job.setdefault("active_files", set()).add(str(filename))
+                f_abs = str(Path(filename).resolve())
+                job.setdefault("active_temp_files", set()).add(f_abs)
+                job.setdefault("active_files", set()).add(f_abs)
             tmp = d.get("tmpfilename")
             if tmp:
-                job.setdefault("active_files", set()).add(str(tmp))
+                t_abs = str(Path(tmp).resolve())
+                job.setdefault("active_temp_files", set()).add(t_abs)
+                job.setdefault("active_files", set()).add(t_abs)
 
             info_dict = d.get("info_dict") or {}
             if "id" in info_dict and not job.get("video_id"):
@@ -739,6 +841,17 @@ class MediaDownloader:
             elif status == "finished":
                 job["progress"] = 0.99
                 job["speed"] = "Finalizing"
+                if filename:
+                    p = Path(filename).resolve()
+                    if p.is_file() and p.stat().st_size > 0:
+                        p_abs = str(p)
+                        job.setdefault("completed_files", set()).add(p_abs)
+                        job.setdefault("active_temp_files", set()).discard(p_abs)
+                        if p.name not in job.setdefault("files", []):
+                            job["files"].append(p.name)
+                        for ext in (".part", ".ytdl", ".temp"):
+                            part_p = p.with_name(p.name + ext)
+                            job.setdefault("active_temp_files", set()).discard(str(part_p.resolve()))
 
         ydl_opts["progress_hooks"] = [hook]
 
@@ -749,7 +862,7 @@ class MediaDownloader:
                 if not info:
                     raise MediaDownloaderError("Failed to extract media.")
 
-                downloaded_files: list[str] = []
+                downloaded_files: list[str] = list(job.get("files") or [])
                 entries = info.get("entries")
                 if entries:
                     job["is_playlist"] = True
@@ -774,8 +887,12 @@ class MediaDownloader:
 
                         for p in epaths:
                             if p.is_file() and p.stat().st_size > 0:
-                                downloaded_files.append(p.name)
-                                job.setdefault("active_files", set()).add(str(p))
+                                if p.name not in downloaded_files:
+                                    downloaded_files.append(p.name)
+                                p_res = str(p.resolve())
+                                job.setdefault("completed_files", set()).add(p_res)
+                                job.setdefault("active_temp_files", set()).discard(p_res)
+                                job.setdefault("active_files", set()).add(p_res)
 
                 elif "requested_downloads" in info and info["requested_downloads"]:
                     for rd in info["requested_downloads"]:
@@ -783,8 +900,12 @@ class MediaDownloader:
                         if fp:
                             p = Path(fp)
                             if p.is_file() and p.stat().st_size > 0:
-                                downloaded_files.append(p.name)
-                                job.setdefault("active_files", set()).add(str(p))
+                                if p.name not in downloaded_files:
+                                    downloaded_files.append(p.name)
+                                p_res = str(p.resolve())
+                                job.setdefault("completed_files", set()).add(p_res)
+                                job.setdefault("active_temp_files", set()).discard(p_res)
+                                job.setdefault("active_files", set()).add(p_res)
 
                 if not downloaded_files:
                     final_path = Path(ydl.prepare_filename(info))
@@ -798,7 +919,10 @@ class MediaDownloader:
                             final_path = candidate
                     if final_path.is_file() and final_path.stat().st_size > 0:
                         downloaded_files.append(final_path.name)
-                        job.setdefault("active_files", set()).add(str(final_path))
+                        p_res = str(final_path.resolve())
+                        job.setdefault("completed_files", set()).add(p_res)
+                        job.setdefault("active_temp_files", set()).discard(p_res)
+                        job.setdefault("active_files", set()).add(p_res)
 
                 # Verify all expected files exist and have non-zero size
                 if not downloaded_files:
@@ -834,7 +958,7 @@ class MediaDownloader:
         except DownloadCancelledError:
             job["status"] = "cancelled"
             job["error"] = "Download was cancelled."
-            self._cleanup_partial_files(job_id, custom_name)
+            self._cleanup_partial_files(job_id)
         except Exception as exc:
             if abort.is_set():
                 job["status"] = "cancelled"
@@ -842,7 +966,7 @@ class MediaDownloader:
             else:
                 job["status"] = "failed"
                 job["error"] = str(exc)[:300]
-            self._cleanup_partial_files(job_id, custom_name)
+            self._cleanup_partial_files(job_id)
         finally:
             self._persist_job(job)
             with self._lock:
