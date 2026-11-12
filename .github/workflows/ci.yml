@@ -18,7 +18,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with: { python-version: "3.12" }
-      - run: pip install --require-hashes -r services/api/requirements.lock && pip install --no-deps -e "services/api" && pip install "pytest>=8" "pytest-asyncio>=0.23" "cryptography==50.0.2" "playwright>=1.45" "psycopg[binary]>=3.1" && python -m playwright install --with-deps chromium
+      - run: pip install --require-hashes -r services/api/requirements.lock && pip install --no-deps -e "services/api" && pip install "pytest>=8" "pytest-asyncio>=0.23" "cryptography==50.0.2" "playwright>=1.45" "psycopg[binary]>=3.1" "yt-dlp>=2024.4" && python -m playwright install --with-deps chromium
       - name: Video tools for the video studio tests (FFmpeg, a test voice, speech-to-text and its smallest model)
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg espeak-ng >/dev/null
@@ -36,7 +36,7 @@ jobs:
         with: { node-version: "22" }
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with: { python-version: "3.12" }
-      - run: pip install --require-hashes -r services/api/requirements.lock && pip install --no-deps -e "services/api" && cd apps/web && npm ci && npx playwright install --with-deps chromium
+      - run: pip install --require-hashes -r services/api/requirements.lock && pip install --no-deps -e "services/api" && pip install "yt-dlp>=2024.4" && cd apps/web && npm ci && npx playwright install --with-deps chromium
       - run: cd apps/web && npx tsc --noEmit && npm test && npm run build
       - run: node --test services/connect/worker.test.mjs  # STARK Connect token server
       - run: cd apps/web && npx playwright test

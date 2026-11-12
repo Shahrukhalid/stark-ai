@@ -124,7 +124,7 @@ def test_real_export_thumbnail_and_captions(client, settings):
     assert j["status"] == "done", j
     info = video.probe(exe, video.Studio(settings).path(j["output"]))
     assert (info["width"], info["height"]) == (1080, 1080) and 1.5 <= info["duration"] <= 2.6
-    assert client.get(f"/api/video/file?name={j['captions']}").text.startswith("1\n")
+    assert client.get(f"/api/video/file?name={j['captions']}").text.replace("\r\n", "\n").startswith("1\n")
     thumb = client.post("/api/video/thumbnail", json={"file": up["name"], "at": 1}).json()
     assert thumb["file"].startswith("media/generated/") and thumb["file"].endswith(".jpg")
     assert any(i["name"] == thumb["name"] for i in client.get("/api/media").json()["images"])

@@ -1,6 +1,6 @@
 "use client";
 
-import { Clapperboard, Download, Image as ImageIcon, LoaderCircle, Mic, Scissors, Trash2, Upload, X } from "lucide-react";
+import { Clapperboard, Download, DownloadCloud, FileText, Globe, Image as ImageIcon, LoaderCircle, Mic, Scissors, ShieldCheck, Sliders, Trash2, Upload, X } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { useStark } from "@/lib/store";
 import { Section } from "./ui";
@@ -29,9 +29,16 @@ export function VideoStudio({ talkTo }: { talkTo: (agentId: string, text?: strin
   const [frames, setFrames] = useState<{ a?: string; b?: string }>({});
   const [model, setModel] = useState("base");
   const [pkg, setPkg] = useState({ count: 3, platforms: ["tiktok", "instagram", "youtube"], animation: "pop" });
+  const [showDownloadModal, setShowDownloadModal] = useState(false);
+  const [dlUrl, setDlUrl] = useState("");
+  const [dlRes, setDlRes] = useState("");
+  const [dlAudio, setDlAudio] = useState(false);
+  const [dlJobs, setDlJobs] = useState<any[]>([]);
   const [o, setO] = useState({
     file: "", presets: ["vertical"] as string[], format: "mp4", fit: "pad", start: "", end: "", mute: false, speed: 1, volume: 1, fade: 0, transition: 0.5,
     captions: "none", caption_source: "script", animation: "none", transition_type: "fade", script: "", srt: "", style: { size: 14, color: "white", position: "bottom", box: false },
+    normalize_audio: false, brightness: 0, contrast: 1, saturation: 1, gamma: 1,
+    watermark_text: "", watermark_position: "bottom-right", watermark_size: 24, watermark_color: "white",
   });
   const set = (k: keyof typeof o, v: any) => setO((x) => ({ ...x, [k]: v }));
 
@@ -122,6 +129,79 @@ export function VideoStudio({ talkTo }: { talkTo: (agentId: string, text?: strin
     }
   }
 
+  const pollDlJobs = useCallback(() => {
+    client.get<{ jobs: any[] }>("/api/video/download/jobs").then((r) => {
+      setDlJobs(r.jobs || []);
+    }).catch(() => {});
+  }, [client]);
+
+  useEffect(() => {
+    if (!showDownloadModal && !dlJobs.some((j) => j.status === "running" || j.status === "queued")) return;
+    pollDlJobs();
+    const timer = setInterval(pollDlJobs, 1200);
+    return () => clearInterval(timer);
+  }, [showDownloadModal, dlJobs, pollDlJobs]);
+
+  async function exportSrt() {
+    if (!o.file) return;
+    try {
+      const res = await client.get<{ file: string; srt: string }>(`/api/video/captions?name=${encodeURIComponent(o.file)}`);
+      const blob = new Blob([res.srt], { type: "text/plain;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${o.file.replace(/\.[^.]+$/, "")}.srt`;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 10_000);
+      notify("success", "Captions exported as SRT");
+    } catch (e: any) {
+      notify("error", e.message);
+    }
+  }
+
+  function importSrtFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const f = e.target.files?.[0];
+    if (!f || !o.file) return;
+    const reader = new FileReader();
+    reader.onload = async () => {
+      const text = String(reader.result || "");
+      try {
+        await client.post("/api/video/captions", { file: o.file, content: text });
+        setO((x) => ({ ...x, srt: text, caption_source: "srt", captions: x.captions === "none" ? "burn" : x.captions }));
+        notify("success", "SRT captions saved");
+        load();
+      } catch (err: any) {
+        notify("error", err.message);
+      }
+    };
+    reader.readAsText(f);
+  }
+
+  async function startWebDownload() {
+    if (!dlUrl.trim()) return;
+    setBusy("dl-start");
+    try {
+      await client.post<any>("/api/video/download", { url: dlUrl, resolution: dlRes || null, audio_only: dlAudio });
+      notify("success", "Download started");
+      setDlUrl("");
+      pollDlJobs();
+    } catch (e: any) {
+      notify("error", e.message);
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function cancelWebDownload(id: string) {
+    try {
+      await client.del(`/api/video/download/jobs/${id}`);
+      notify("success", "Download cancelled");
+      pollDlJobs();
+    } catch (e: any) {
+      notify("error", e.message);
+    }
+  }
+
   if (!home) return null;
   const ff = home.ffmpeg;
   const videos = home.files.filter((f) => f.kind === "video");
@@ -144,6 +224,9 @@ export function VideoStudio({ talkTo }: { talkTo: (agentId: string, text?: strin
                 {busy === "upload" ? <LoaderCircle size={13} className="animate-spin" /> : <Upload size={13} />} Add video
                 <input type="file" accept="video/mp4,video/quicktime,video/webm,video/x-matroska,.m4v" className="sr-only" onChange={(e) => e.target.files?.[0] && upload(e.target.files[0])} />
               </label>
+              <button className="btn" onClick={() => setShowDownloadModal(true)}>
+                <Globe size={13} className="text-cyan-300" /> Download from Web
+              </button>
             </div>
 
             {o.file && (
@@ -180,8 +263,48 @@ export function VideoStudio({ talkTo }: { talkTo: (agentId: string, text?: strin
                 <label className="flex items-center gap-1"><input type="radio" checked={o.fit === "pad"} onChange={() => set("fit", "pad")} /> Whole picture (bars)</label>
                 <label className="flex items-center gap-1"><input type="radio" checked={o.fit === "crop"} onChange={() => set("fit", "crop")} /> Fill the frame (crop)</label>
                 <label className="flex items-center gap-1"><input type="checkbox" checked={o.mute} onChange={(e) => set("mute", e.target.checked)} /> Remove sound</label>
+                <label className="flex items-center gap-1"><input type="checkbox" checked={o.normalize_audio} onChange={(e) => set("normalize_audio", e.target.checked)} /> Broadcast audio (-14 LUFS)</label>
               </div>
             </fieldset>
+
+            <details className="rounded-lg border border-[var(--color-line)] p-2">
+              <summary className="cursor-pointer text-xs font-medium flex items-center gap-1.5"><Sliders size={13} className="text-cyan-300" /> Color & visual grading</summary>
+              <div className="mt-2 grid gap-2 sm:grid-cols-3 text-xs">
+                <label>{label(`Brightness ${Math.round(o.brightness * 100)}%`)}<input className="mt-2 w-full" type="range" min={-0.5} max={0.5} step={0.05} value={o.brightness} onChange={(e) => set("brightness", Number(e.target.value))} /></label>
+                <label>{label(`Contrast ${o.contrast.toFixed(2)}×`)}<input className="mt-2 w-full" type="range" min={0.5} max={1.5} step={0.05} value={o.contrast} onChange={(e) => set("contrast", Number(e.target.value))} /></label>
+                <label>{label(`Saturation ${o.saturation.toFixed(1)}×`)}<input className="mt-2 w-full" type="range" min={0} max={2} step={0.1} value={o.saturation} onChange={(e) => set("saturation", Number(e.target.value))} /></label>
+              </div>
+            </details>
+
+            <details className="rounded-lg border border-[var(--color-line)] p-2">
+              <summary className="cursor-pointer text-xs font-medium flex items-center gap-1.5"><ShieldCheck size={13} className="text-cyan-300" /> Watermark</summary>
+              <div className="mt-2 space-y-2 text-xs">
+                <input className="input w-full" type="text" placeholder="Watermark text (e.g. @yourbrand)" value={o.watermark_text} onChange={(e) => set("watermark_text", e.target.value)} />
+                {o.watermark_text && (
+                  <div className="flex flex-wrap items-center gap-2">
+                    <label>{label("Position")}
+                      <select className="input mt-1 !w-auto !py-1" value={o.watermark_position} onChange={(e) => set("watermark_position", e.target.value)}>
+                        <option value="bottom-right">Bottom Right</option>
+                        <option value="bottom-left">Bottom Left</option>
+                        <option value="top-right">Top Right</option>
+                        <option value="top-left">Top Left</option>
+                        <option value="center">Center</option>
+                      </select>
+                    </label>
+                    <label>{label("Size")}
+                      <input className="input mt-1 !w-16 !py-1" type="number" min={12} max={72} value={o.watermark_size} onChange={(e) => set("watermark_size", Number(e.target.value))} />
+                    </label>
+                    <label>{label("Color")}
+                      <select className="input mt-1 !w-auto !py-1" value={o.watermark_color} onChange={(e) => set("watermark_color", e.target.value)}>
+                        <option value="white">White</option>
+                        <option value="yellow">Yellow</option>
+                        <option value="cyan">Cyan</option>
+                      </select>
+                    </label>
+                  </div>
+                )}
+              </div>
+            </details>
 
             <details className="rounded-lg border border-[var(--color-line)] p-2" open={o.captions !== "none"}>
               <summary className="cursor-pointer text-xs font-medium">Captions</summary>
@@ -208,6 +331,15 @@ export function VideoStudio({ talkTo }: { talkTo: (agentId: string, text?: strin
                     <textarea className="input w-full font-mono text-xs" rows={2} value={o.srt} onChange={(e) => set("srt", e.target.value)} placeholder="…or paste exact SRT captions" />
                   </>
                 )}
+                <div className="flex flex-wrap gap-2 pt-1">
+                  <button className="btn !py-1 text-xs" disabled={!o.file || busy === "srt-export"} onClick={exportSrt}>
+                    <Download size={11} /> Export SRT
+                  </button>
+                  <label className="btn !py-1 text-xs cursor-pointer">
+                    <Upload size={11} /> Import SRT
+                    <input type="file" accept=".srt" className="sr-only" onChange={importSrtFile} />
+                  </label>
+                </div>
                 {o.captions === "burn" && (
                   <div className="flex flex-wrap items-center gap-2 text-xs">
                     <label className="flex items-center gap-1">Size <input className="input !w-16 !py-1" type="number" min={8} max={40} value={o.style.size} onChange={(e) => set("style", { ...o.style, size: Number(e.target.value) })} /></label>
@@ -359,6 +491,83 @@ export function VideoStudio({ talkTo }: { talkTo: (agentId: string, text?: strin
                 ))}
               </>
             )}
+          </div>
+        </div>
+      )}
+
+      {showDownloadModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-lg rounded-xl border border-[var(--color-line)] bg-[var(--color-bg)] p-5 shadow-2xl">
+            <div className="flex items-center justify-between pb-3 border-b border-[var(--color-line)]">
+              <div className="flex items-center gap-2 font-medium text-cyan-200">
+                <Globe size={16} /> Download Media from Web
+              </div>
+              <button className="btn !p-1 text-[var(--color-mute)] hover:text-white" onClick={() => setShowDownloadModal(false)} aria-label="Close">
+                <X size={15} />
+              </button>
+            </div>
+            <div className="mt-4 space-y-3 text-xs">
+              <p className="text-[var(--color-mute)]">
+                Acquire public videos, audio or playlists directly to your local library. Supports direct MP4, public social videos, and audio extractions.
+              </p>
+              <div>
+                <span className="hud-label text-[var(--color-mute)]">Source URL</span>
+                <input
+                  className="input mt-1 w-full text-xs"
+                  placeholder="https://... (video, playlist or post link)"
+                  value={dlUrl}
+                  onChange={(e) => setDlUrl(e.target.value)}
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <label>
+                  <span className="hud-label text-[var(--color-mute)]">Max Resolution</span>
+                  <select className="input mt-1 w-full text-xs" value={dlRes} onChange={(e) => setDlRes(e.target.value)} disabled={dlAudio}>
+                    <option value="">Best Available</option>
+                    <option value="1080">1080p Full HD</option>
+                    <option value="720">720p HD</option>
+                    <option value="480">480p SD</option>
+                  </select>
+                </label>
+                <div className="flex items-end pb-2">
+                  <label className="flex items-center gap-1.5 cursor-pointer">
+                    <input type="checkbox" checked={dlAudio} onChange={(e) => setDlAudio(e.target.checked)} />
+                    <span>Audio only (.mp3)</span>
+                  </label>
+                </div>
+              </div>
+              <div className="flex justify-end gap-2 pt-2">
+                <button className="btn" onClick={() => setShowDownloadModal(false)}>Close</button>
+                <button className="btn btn-primary" disabled={!dlUrl.trim() || busy === "dl-start"} onClick={startWebDownload}>
+                  {busy === "dl-start" ? <LoaderCircle size={13} className="animate-spin" /> : <DownloadCloud size={13} />} Start Download
+                </button>
+              </div>
+
+              {dlJobs.length > 0 && (
+                <div className="mt-3 border-t border-[var(--color-line)] pt-3 space-y-2">
+                  <span className="hud-label text-[var(--color-mute)]">Recent Downloads</span>
+                  {dlJobs.map((j) => (
+                    <div key={j.id} className="rounded border border-[var(--color-line)] p-2">
+                      <div className="flex items-center justify-between">
+                        <span className={`font-mono ${j.status === "done" ? "text-emerald-300" : j.status === "failed" ? "text-red-300" : "text-cyan-300"}`}>
+                          {j.status} {j.speed ? `· ${j.speed}` : ""} {j.eta ? `· ${j.eta}` : ""}
+                        </span>
+                        {j.status === "running" && (
+                          <button className="btn !py-0.5 !px-1.5" onClick={() => cancelWebDownload(j.id)}>Cancel</button>
+                        )}
+                      </div>
+                      <div className="truncate text-[var(--color-mute)] mt-0.5">{j.output || j.title || j.url}</div>
+                      {(j.status === "running" || j.status === "queued") && (
+                        <div className="mt-1 h-1 overflow-hidden rounded bg-white/10">
+                          <div className="h-full bg-cyan-400 transition-all" style={{ width: `${Math.round(j.progress * 100)}%` }} />
+                        </div>
+                      )}
+                      {j.error && <p className="text-red-300 mt-1">{j.error}</p>}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
         </div>
       )}

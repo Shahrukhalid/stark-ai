@@ -25,7 +25,7 @@ for base in {sysconfig.get_paths()["platlib"], sysconfig.get_paths()["purelib"]}
 print("whisper libraries:", [Path(p).name for p, _ in WHISPER_LIBS])
 
 hidden = (["keyring.backends.macOS", "ApplicationServices", "Quartz", "AppKit"] if sys.platform == "darwin"
-          else ["keyring.backends.Windows", "comtypes", "comtypes.client"]) + ["imageio_ffmpeg", "pywhispercpp", "pywhispercpp.model", "_pywhispercpp", "numpy", "sounddevice", "hotkey"] + collect_submodules("stark") + collect_submodules("uvicorn")
+          else ["keyring.backends.Windows", "comtypes", "comtypes.client"]) + ["imageio_ffmpeg", "pywhispercpp", "pywhispercpp.model", "_pywhispercpp", "numpy", "sounddevice", "yt_dlp", "hotkey"] + collect_submodules("stark") + collect_submodules("uvicorn")
 a = Analysis(
     [str(ROOT / "desktop/stark_desktop.py")],
     pathex=[str(ROOT / "services/api")],

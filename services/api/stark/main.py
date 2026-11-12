@@ -46,7 +46,7 @@ from .providers import ModelProvider
 from . import autopilot as ap
 from . import automations, brands, growth, hub, insights, reach
 from . import health as account_health
-from . import shorts, token_refresh, video
+from . import media_downloader, publishing_policy, shorts, token_refresh, video
 from .core.db import Campaign
 from .tools import build_registry
 from .tools import social as social_tools
@@ -258,6 +258,32 @@ class VideoIn(BaseModel):
     captions: Literal["none", "burn", "track", "file"] = "none"
     script: str | None = Field(None, max_length=20_000)
     srt: str | None = Field(None, max_length=200_000)
+    normalize_audio: bool = False
+    brightness: float = Field(0.0, ge=-1.0, le=1.0)
+    contrast: float = Field(1.0, ge=-2.0, le=2.0)
+    saturation: float = Field(1.0, ge=0.0, le=3.0)
+    gamma: float = Field(1.0, ge=0.1, le=10.0)
+    watermark_text: str | None = Field(None, max_length=100)
+    watermark_position: Literal["top-left", "top-right", "bottom-left", "bottom-right", "center"] = "bottom-right"
+    watermark_size: int = Field(24, ge=12, le=72)
+    watermark_color: Literal["white", "yellow", "cyan"] = "white"
+
+
+class DownloadIn(BaseModel):
+    url: str = Field(..., max_length=1000)
+    resolution: str | None = Field(None, max_length=20)
+    audio_only: bool = False
+    custom_name: str | None = Field(None, max_length=120)
+
+
+class CaptionsIn(BaseModel):
+    file: str = Field(..., max_length=200)
+    content: str = Field(..., max_length=500_000)
+
+
+class PolicyCheckIn(BaseModel):
+    platform: str = Field(..., max_length=50)
+    recent_post_timestamps: list[float] | None = None
 
 
 class PackageIn(BaseModel):
@@ -398,6 +424,7 @@ def create_app(settings: Settings | None = None, providers: dict[str, ModelProvi
         scheduler = asyncio.create_task(_scheduler_loop(holder["k"]))
         holder["k"].webhooks = hub.Webhooks(holder["k"], settings)
         holder["k"].video = video.Studio(settings)
+        holder["k"].media_downloader = media_downloader.MediaDownloader(video.folder(settings), video.ffmpeg_path())
         background = [asyncio.create_task(holder["k"].notifier.run()), asyncio.create_task(holder["k"].webhooks.run()),
                       asyncio.create_task(hub.recycler_loop(holder["k"], social, settings)),
                       asyncio.create_task(_snapshot_loop(holder["k"], social)),
@@ -1376,6 +1403,75 @@ def create_app(settings: Settings | None = None, providers: dict[str, ModelProvi
         except video.VideoError as exc:
             raise HTTPException(404, str(exc)) from None
         return {"deleted": name}
+
+    # ---------------------------------------------------------- media downloader & harvester
+    @app.post("/api/video/download", dependencies=[api])
+    async def video_download(body: DownloadIn, k: Kernel = Depends(kernel)):
+        if not hasattr(k, "media_downloader"):
+            k.media_downloader = media_downloader.MediaDownloader(video.folder(settings), video.ffmpeg_path())
+        try:
+            job = k.media_downloader.start_download(
+                url=body.url,
+                resolution=body.resolution,
+                audio_only=body.audio_only,
+                custom_name=body.custom_name,
+            )
+            k.obs.audit("user", "video.download", "ok", target=body.url)
+            return job
+        except media_downloader.MediaDownloaderError as exc:
+            raise HTTPException(400, str(exc)) from None
+
+    @app.get("/api/video/download/jobs", dependencies=[api])
+    async def video_download_jobs(k: Kernel = Depends(kernel)):
+        if not hasattr(k, "media_downloader"):
+            k.media_downloader = media_downloader.MediaDownloader(video.folder(settings), video.ffmpeg_path())
+        return {"jobs": k.media_downloader.list_jobs()}
+
+    @app.delete("/api/video/download/jobs/{job_id}", dependencies=[api])
+    async def video_download_cancel(job_id: str, k: Kernel = Depends(kernel)):
+        if not hasattr(k, "media_downloader"):
+            raise HTTPException(404, "no active downloader")
+        if not k.media_downloader.cancel(job_id):
+            raise HTTPException(404, "no running download job with that id")
+        return {"cancelled": job_id}
+
+    @app.post("/api/video/analyze", dependencies=[api])
+    async def video_analyze(body: DownloadIn, k: Kernel = Depends(kernel)):
+        if not hasattr(k, "media_downloader"):
+            k.media_downloader = media_downloader.MediaDownloader(video.folder(settings), video.ffmpeg_path())
+        try:
+            return await asyncio.to_thread(k.media_downloader.analyze, body.url)
+        except media_downloader.MediaDownloaderError as exc:
+            raise HTTPException(400, str(exc)) from None
+
+    @app.get("/api/video/captions", dependencies=[api])
+    async def video_captions_get(name: str, k: Kernel = Depends(kernel)):
+        try:
+            text = k.video.export_srt(name)
+            return {"file": name, "srt": text}
+        except video.VideoError as exc:
+            raise HTTPException(404, str(exc)) from None
+
+    @app.post("/api/video/captions", dependencies=[api])
+    async def video_captions_set(body: CaptionsIn, k: Kernel = Depends(kernel)):
+        try:
+            saved = k.video.import_srt(body.file, body.content)
+            return {"file": body.file, "captions": saved}
+        except video.VideoError as exc:
+            raise HTTPException(400, str(exc)) from None
+
+    @app.get("/api/publishing/policy", dependencies=[api])
+    async def publishing_policy_get(platform: str = "generic"):
+        pol = publishing_policy.get_policy(platform)
+        remaining = publishing_policy.get_cooldown_remaining(platform)
+        return {"policy": pol, "cooldown_seconds": remaining}
+
+    @app.post("/api/publishing/check", dependencies=[api])
+    async def publishing_policy_check(body: PolicyCheckIn):
+        return publishing_policy.check_eligibility(
+            platform=body.platform,
+            recent_post_timestamps=body.recent_post_timestamps,
+        )
 
     @app.get("/api/media", dependencies=[api])
     async def media_list():

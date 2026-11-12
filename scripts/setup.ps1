@@ -46,7 +46,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "Installing the API dependencies failed." }
     & $VenvPy -m pip install --disable-pip-version-check -q --no-deps -e .
     if ($LASTEXITCODE -ne 0) { throw "Installing the API failed." }
-    & $VenvPy -m pip install --disable-pip-version-check -q "pytest>=8" "pytest-asyncio>=0.23" "playwright>=1.45"
+    & $VenvPy -m pip install --disable-pip-version-check -q "pytest>=8" "pytest-asyncio>=0.23" "playwright>=1.45" "yt-dlp>=2024.4"
     if ($LASTEXITCODE -ne 0) { throw "Installing the test tools failed." }
 } finally { Pop-Location }
 

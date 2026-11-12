@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import fnmatch
+import os
 import re
 import stat
 from pathlib import Path
@@ -100,7 +101,7 @@ class SecurityAudit(Tool):
                 add("info", "scan_limit", base, f"Stopped after {max_files} files", "Narrow the path")
                 break
             mode = p.stat().st_mode
-            if mode & stat.S_IWOTH:
+            if os.name != "nt" and (mode & stat.S_IWOTH):
                 add("medium", "world_writable", p, "File is writable by every user", "chmod o-w <file>")
             if is_sensitive(p) and p.name != ".env.example":
                 if ignore_patterns and not ignored(p):
@@ -109,7 +110,7 @@ class SecurityAudit(Tool):
                 elif not ignore_patterns:
                     add("medium", "sensitive_file", p, "Sensitive file present in project",
                         "Keep it out of version control; prefer a secret manager")
-                if mode & (stat.S_IRGRP | stat.S_IROTH):
+                if os.name != "nt" and (mode & (stat.S_IRGRP | stat.S_IROTH)):
                     add("medium", "sensitive_permissions", p, "Sensitive file readable by group/others",
                         "chmod 600 <file>")
             if p.suffix.lower() not in TEXT_EXT and p.name not in {"Dockerfile", "Makefile"}:

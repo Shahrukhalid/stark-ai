@@ -20,6 +20,8 @@ import uuid
 from pathlib import Path
 from typing import Any, Callable
 
+from .power import keep_awake
+
 VIDEO_DIR = "media/video"
 VIDEO_TYPES = {".mp4", ".mov", ".m4v", ".webm", ".mkv"}
 MAX_UPLOAD = 2 * 1024 * 1024 * 1024  # streamed to disk, never held in memory
@@ -396,6 +398,33 @@ def build_command(exe: str, src: Path, out: Path, info: dict[str, Any], opts: di
         vf.append(f"fade=t=in:st=0:d={fade:.2f},fade=t=out:st={out_len - fade:.2f}:d={fade:.2f}")
     if fmt == "gif":
         vf.append("fps=12,scale='min(720,iw)':-2:flags=lanczos")
+    # Color grading & visual adjustments
+    brightness = float(opts.get("brightness") or 0.0)
+    contrast = float(opts.get("contrast") if opts.get("contrast") is not None else 1.0)
+    saturation = float(opts.get("saturation") if opts.get("saturation") is not None else 1.0)
+    gamma = float(opts.get("gamma") if opts.get("gamma") is not None else 1.0)
+    if abs(brightness) > 1e-3 or abs(contrast - 1.0) > 1e-3 or abs(saturation - 1.0) > 1e-3 or abs(gamma - 1.0) > 1e-3:
+        b = min(1.0, max(-1.0, brightness))
+        c = min(2.0, max(-2.0, contrast))
+        s = min(3.0, max(0.0, saturation))
+        g = min(10.0, max(0.1, gamma))
+        vf.append(f"eq=contrast={c:.2f}:brightness={b:.2f}:saturation={s:.2f}:gamma={g:.2f}")
+    # Watermark text overlay
+    wm_text = (opts.get("watermark_text") or "").strip()
+    if wm_text:
+        safe_wm = re.sub(r"['\\]", "", wm_text)[:80]
+        pos = str(opts.get("watermark_position") or "bottom-right")
+        coords = {
+            "top-left": "x=24:y=24",
+            "top-right": "x=w-tw-24:y=24",
+            "bottom-left": "x=24:y=h-th-24",
+            "bottom-right": "x=w-tw-24:y=h-th-24",
+            "center": "x=(w-tw)/2:y=(h-th)/2",
+        }.get(pos, "x=w-tw-24:y=h-th-24")
+        wm_size = min(72, max(12, int(opts.get("watermark_size") or 24)))
+        wm_col = str(opts.get("watermark_color") or "white").lower()
+        col_hex = "0xFFFFFF" if wm_col == "white" else "0xFFFF00" if wm_col == "yellow" else "0x00FFFF"
+        vf.append(f"drawtext=text='{safe_wm}':fontsize={wm_size}:fontcolor={col_hex}:box=1:boxcolor=0x00000080:boxborderw=4:{coords}")
     af: list[str] = []
     if audio:
         if speed != 1.0:
@@ -403,6 +432,8 @@ def build_command(exe: str, src: Path, out: Path, info: dict[str, Any], opts: di
         vol = float(opts.get("volume") if opts.get("volume") is not None else 1.0)
         if vol != 1.0:
             af.append(f"volume={min(3.0, max(0.0, vol)):g}")
+        if opts.get("normalize_audio"):
+            af.append("loudnorm=I=-14:LRA=11:TP=-1.5")
         if fade > 0:
             af.append(f"afade=t=in:st=0:d={fade:.2f},afade=t=out:st={out_len - fade:.2f}:d={fade:.2f}")
     cmd = [exe, "-hide_banner", "-y", "-nostats", "-progress", "pipe:1",
@@ -646,42 +677,43 @@ class Studio:
             if job["status"] == "cancelled":
                 return
             job["status"] = "running"
-            tmp = out.with_name(out.name + ".part" + out.suffix)  # FFmpeg needs the real extension at the end
-            cmd = cmd[:-1] + [tmp.name]
-            proc = await asyncio.create_subprocess_exec(*cmd, cwd=str(out.parent), stdout=asyncio.subprocess.PIPE,
-                                                        stderr=asyncio.subprocess.PIPE)
-            self._procs[job["id"]] = proc
-            err_tail: list[str] = []
+            with keep_awake():
+                tmp = out.with_name(out.name + ".part" + out.suffix)  # FFmpeg needs the real extension at the end
+                cmd = cmd[:-1] + [tmp.name]
+                proc = await asyncio.create_subprocess_exec(*cmd, cwd=str(out.parent), stdout=asyncio.subprocess.PIPE,
+                                                            stderr=asyncio.subprocess.PIPE)
+                self._procs[job["id"]] = proc
+                err_tail: list[str] = []
 
-            async def read_err() -> None:
-                assert proc.stderr is not None
-                async for line in proc.stderr:
-                    err_tail.append(line.decode("utf-8", "replace").strip())
-                    del err_tail[:-6]
+                async def read_err() -> None:
+                    assert proc.stderr is not None
+                    async for line in proc.stderr:
+                        err_tail.append(line.decode("utf-8", "replace").strip())
+                        del err_tail[:-6]
 
-            async def read_progress() -> None:
-                assert proc.stdout is not None
-                async for line in proc.stdout:
-                    m = re.match(rb"out_time_(?:us|ms)=(\d+)", line)
-                    if m and job.get("duration"):
-                        job["progress"] = min(0.99, int(m.group(1)) / 1_000_000 / job["duration"])
-            try:
-                await asyncio.wait_for(asyncio.gather(read_err(), read_progress(), proc.wait()), timeout=60 * 60)
-            except asyncio.TimeoutError:
-                proc.kill()
-                job.update(status="failed", error="Took longer than an hour")
-            finally:
-                self._procs.pop(job["id"], None)
-            if job["status"] == "cancelled":
-                tmp.unlink(missing_ok=True)
-            elif job["status"] != "failed" and proc.returncode == 0 and tmp.is_file():
-                os.replace(tmp, out)
-                job.update(status="done", progress=1.0, bytes=out.stat().st_size)
-            else:
-                tmp.unlink(missing_ok=True)
-                if job["status"] != "failed":
-                    msg = " ".join(x for x in err_tail if x and not x.startswith("frame="))[-400:]
-                    job.update(status="failed", error=msg or "FFmpeg failed")
+                async def read_progress() -> None:
+                    assert proc.stdout is not None
+                    async for line in proc.stdout:
+                        m = re.match(rb"out_time_(?:us|ms)=(\d+)", line)
+                        if m and job.get("duration"):
+                            job["progress"] = min(0.99, int(m.group(1)) / 1_000_000 / job["duration"])
+                try:
+                    await asyncio.wait_for(asyncio.gather(read_err(), read_progress(), proc.wait()), timeout=60 * 60)
+                except asyncio.TimeoutError:
+                    proc.kill()
+                    job.update(status="failed", error="Took longer than an hour")
+                finally:
+                    self._procs.pop(job["id"], None)
+                if job["status"] == "cancelled":
+                    tmp.unlink(missing_ok=True)
+                elif job["status"] != "failed" and proc.returncode == 0 and tmp.is_file():
+                    os.replace(tmp, out)
+                    job.update(status="done", progress=1.0, bytes=out.stat().st_size)
+                else:
+                    tmp.unlink(missing_ok=True)
+                    if job["status"] != "failed":
+                        msg = " ".join(x for x in err_tail if x and not x.startswith("frame="))[-400:]
+                        job.update(status="failed", error=msg or "FFmpeg failed")
 
     def cancel(self, job_id: str) -> bool:
         job = self.jobs.get(job_id)
@@ -832,6 +864,34 @@ class Studio:
         p.unlink()
         _transcript_path(p).unlink(missing_ok=True)
         p.with_name(p.name + ".packages.json").unlink(missing_ok=True)
+
+    def export_srt(self, name: str) -> str:
+        return export_srt(self.settings, name)
+
+    def import_srt(self, name: str, content: str) -> str:
+        return import_srt(self.settings, name, content)
+
+
+def export_srt(settings, name: str) -> str:
+    """Exports SRT captions for a video file (from an existing .srt or transcript.json)."""
+    src = _find(settings, name)
+    srt_file = src.with_suffix(".srt")
+    if srt_file.is_file():
+        return srt_file.read_text(encoding="utf-8")
+    tp = _transcript_path(src)
+    if tp.is_file():
+        data = json.loads(tp.read_text(encoding="utf-8"))
+        return _srt_from_segments(split_lines(data.get("segments", [])))
+    raise VideoError("No captions or transcript found for this video")
+
+
+def import_srt(settings, name: str, content: str) -> str:
+    """Imports or saves custom SRT content for a video."""
+    src = _find(settings, name)
+    verified = check_srt(content)
+    dest = src.with_name(f"{src.stem}.srt")
+    dest.write_text(verified, encoding="utf-8")
+    return dest.name
 
 
 def self_check(exe: str, workdir: Path) -> dict[str, Any]:

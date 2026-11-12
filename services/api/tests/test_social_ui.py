@@ -80,7 +80,9 @@ def test_connect_bluesky_from_dashboard_stores_locally_and_never_returns_secret(
     assert acct["mode"] == "connected" and acct["source"] == "dashboard"
     assert "abcd-efgh" not in client.get("/api/social/accounts").text
     path = settings.data_dir / "social_accounts.json"
-    assert path.is_file() and oct(os.stat(path).st_mode & 0o777) == "0o600"
+    assert path.is_file()
+    if os.name != "nt":
+        assert oct(os.stat(path).st_mode & 0o777) == "0o600"
     # survives a restart
     again = social.AccountStore(settings)
     assert again.connected_as("bluesky") == "me.bsky.social"
