@@ -42,23 +42,57 @@ jobs:
 
           echo "Release Gate: Checking CI completion on commit $TARGET_SHA..."
           deadline=$((SECONDS + 1200))
+          ci_verified=false
+
           while [ $SECONDS -lt $deadline ]; do
-            runs_json="$(gh run list --workflow ci.yml --commit "$TARGET_SHA" --json databaseId,status,conclusion --limit 1 || echo '[]')"
-            status="$(echo "$runs_json" | python3 -c 'import sys, json; data=json.load(sys.stdin); print(data[0]["status"] if data else "waiting")')"
-            conclusion="$(echo "$runs_json" | python3 -c 'import sys, json; data=json.load(sys.stdin); print(data[0]["conclusion"] if data else "")')"
+            # Fetch workflow runs specifically matching CI
+            runs_json="$(gh run list --workflow ci.yml --commit "$TARGET_SHA" --json databaseId,status,conclusion,headSha --limit 5 2>/dev/null || echo '[]')"
             
+            # Parse runs strictly matching TARGET_SHA
+            run_match="$(echo "$runs_json" | python3 -c '
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    target = "'"$TARGET_SHA"'"
+    matches = [r for r in data if str(r.get("headSha", "")).startswith(target[:7])]
+    if matches:
+        m = matches[0]
+        status = m.get("status") or "unknown"
+        conclusion = m.get("conclusion") or ""
+        sha = m.get("headSha") or ""
+        print(f"{status}|{conclusion}|{sha}")
+    else:
+        print("waiting||")
+except Exception as e:
+    print(f"error|{e}|")
+' 2>/dev/null || echo 'error|parse_failure|')"
+
+            IFS='|' read -r status conclusion run_sha <<< "$run_match"
+
             if [ "$status" = "completed" ]; then
               if [ "$conclusion" = "success" ]; then
-                echo "Release gate passed: CI completed successfully on $TARGET_SHA"
+                echo "Release gate PASSED: CI completed successfully on commit $TARGET_SHA (matching run SHA: $run_sha)"
+                ci_verified=true
                 break
               else
-                echo "Release gate blocked: CI completed with status '$status' and conclusion '$conclusion' on $TARGET_SHA"
+                echo "Release gate BLOCKED: CI completed with non-success conclusion '$conclusion' (status: '$status') on $TARGET_SHA"
                 exit 1
               fi
+            elif [ "$status" = "cancelled" ] || [ "$conclusion" = "cancelled" ] || [ "$conclusion" = "failure" ]; then
+              echo "Release gate BLOCKED: CI failed or cancelled on commit $TARGET_SHA (status: '$status', conclusion: '$conclusion')"
+              exit 1
+            elif [ "$status" = "error" ]; then
+              echo "Release gate WARNING: Error inspecting CI runs: $conclusion"
             fi
-            echo "Waiting for CI workflow to complete (current status: $status)..."
+
+            echo "Waiting for CI workflow to complete on $TARGET_SHA (current status: $status, conclusion: ${conclusion:-pending})..."
             sleep 20
           done
+
+          if [ "$ci_verified" != "true" ]; then
+            echo "Release gate BLOCKED: Failed to verify successful CI completion within timeout on commit $TARGET_SHA (ci_verified=$ci_verified)"
+            exit 1
+          fi
 
           echo "Creating Git tag $tag for commit $TARGET_SHA"
           gh api "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/$tag" -f sha="$TARGET_SHA" >/dev/null

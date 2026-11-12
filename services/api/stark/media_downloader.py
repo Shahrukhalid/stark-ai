@@ -180,43 +180,77 @@ def validate_url(url: str, resolve_dns: bool = True) -> str:
     return clean
 
 
-# ------------------------------------------------------------------ yt-dlp SSRF Hooks
+# ------------------------------------------------------------------ yt-dlp SSRF & Rebinding Hooks
 _YTDLP_HOOKS_INSTALLED = False
 _HOOK_LOCK = threading.Lock()
+_ORIG_CREATE_CONNECTION = socket.create_connection
+
+
+def _safe_create_connection(address, *args, **kwargs):
+    """Enforces SSRF and DNS rebinding protections at the socket connection layer."""
+    if isinstance(address, (list, tuple)) and len(address) >= 2:
+        host, port = address[0], address[1]
+        if isinstance(port, int) and port in _DISALLOWED_PORTS:
+            raise ConnectionRefusedError(f"Connection to restricted port {port} is blocked by SSRF defense.")
+
+        host_str = str(host).lower().strip()
+        # Direct IP check
+        try:
+            ip = ipaddress.ip_address(host_str)
+            if not _is_ip_allowed(str(ip)):
+                raise ConnectionRefusedError(f"Connection to restricted IP {host_str} is blocked by SSRF defense.")
+        except ValueError:
+            # Domain check: resolve and verify every address to defeat DNS rebinding
+            try:
+                infos = socket.getaddrinfo(host_str, port, family=socket.AF_UNSPEC, type=socket.SOCK_STREAM)
+                for item in infos:
+                    resolved_ip = item[4][0]
+                    if not _is_ip_allowed(resolved_ip):
+                        raise ConnectionRefusedError(
+                            f"DNS rebinding blocked: {host_str} resolved to restricted IP {resolved_ip}"
+                        )
+            except socket.gaierror:
+                pass
+    return _ORIG_CREATE_CONNECTION(address, *args, **kwargs)
 
 
 def install_ytdlp_ssrf_guards() -> None:
-    """Installs runtime SSRF interceptors into yt-dlp's request dispatcher and redirect handler."""
+    """Installs runtime SSRF interceptors into yt-dlp dispatchers and socket connections."""
     global _YTDLP_HOOKS_INSTALLED
     with _HOOK_LOCK:
-        if _YTDLP_HOOKS_INSTALLED or not _ytdlp_common or not _ytdlp_urllib:
+        if _YTDLP_HOOKS_INSTALLED:
             return
 
-        orig_send = _ytdlp_common.RequestDirector.send
+        # Install socket connection guard against DNS rebinding
+        socket.create_connection = _safe_create_connection
 
-        def safe_send(self, request):
-            if hasattr(request, "url") and request.url:
-                try:
-                    validate_url(request.url, resolve_dns=True)
-                except Exception as exc:
-                    raise _ytdlp_common.TransportError(f"SSRF blocked: {exc}") from exc
-            return orig_send(self, request)
+        if _ytdlp_common and _ytdlp_urllib:
+            orig_send = _ytdlp_common.RequestDirector.send
 
-        _ytdlp_common.RequestDirector.send = safe_send
+            def safe_send(self, request):
+                if hasattr(request, "url") and request.url:
+                    try:
+                        validate_url(request.url, resolve_dns=True)
+                    except Exception as exc:
+                        raise _ytdlp_common.TransportError(f"SSRF blocked: {exc}") from exc
+                return orig_send(self, request)
 
-        orig_redirect = _ytdlp_urllib.RedirectHandler.redirect_request
+            _ytdlp_common.RequestDirector.send = safe_send
 
-        def safe_redirect(self, req, fp, code, msg, headers, newurl):
-            if newurl:
-                try:
-                    validate_url(newurl, resolve_dns=True)
-                except Exception as exc:
-                    raise _ytdlp_urllib.TransportError(f"SSRF redirect blocked: {exc}") from exc
-            return orig_redirect(self, req, fp, code, msg, headers, newurl)
+            orig_redirect = _ytdlp_urllib.RedirectHandler.redirect_request
 
-        _ytdlp_urllib.RedirectHandler.redirect_request = safe_redirect
+            def safe_redirect(self, req, fp, code, msg, headers, newurl):
+                if newurl:
+                    try:
+                        validate_url(newurl, resolve_dns=True)
+                    except Exception as exc:
+                        raise _ytdlp_urllib.TransportError(f"SSRF redirect blocked: {exc}") from exc
+                return orig_redirect(self, req, fp, code, msg, headers, newurl)
+
+            _ytdlp_urllib.RedirectHandler.redirect_request = safe_redirect
+
         _YTDLP_HOOKS_INSTALLED = True
-        logger.info("yt-dlp SSRF request & redirect guards active.")
+        logger.info("yt-dlp SSRF request, redirect, and socket rebinding guards active.")
 
 
 def ytdlp_available() -> bool:
@@ -254,7 +288,7 @@ class MediaDownloader:
         self._queue_thread.start()
 
     def _restore_jobs(self) -> None:
-        """Restores job records from database and cleans up interrupted states from prior runs."""
+        """Restores job records from database, sets up cancellation events, and cleans up interrupted states."""
         if not self.db:
             return
         try:
@@ -281,15 +315,20 @@ class MediaDownloader:
                         "is_playlist": r.is_playlist,
                         "playlist_count": r.playlist_count,
                         "playlist_index": r.playlist_index,
+                        "files": list(getattr(r, "files", None) or []),
                         "created": r.created_at.timestamp() if r.created_at else time.time(),
+                        "active_files": set(),
                     }
-                    # Mark any job that was running when app terminated as interrupted
+                    # If job was in-flight when app crashed/restarted, transition to interrupted
                     if job_dict["status"] == "running":
                         job_dict["status"] = "interrupted"
                         job_dict["error"] = "Interrupted by application restart."
                         r.status = "interrupted"
                         r.error = "Interrupted by application restart."
+
                     self.jobs[r.id] = job_dict
+                    # Restored jobs (especially queued jobs) MUST have an abort Event so workers can run them
+                    self._abort_events[r.id] = threading.Event()
         except Exception as exc:
             logger.warning(f"Could not restore download jobs from database: {exc}")
 
@@ -303,6 +342,7 @@ class MediaDownloader:
             with self.db.session() as s:
                 row = s.get(DownloadJob, job["id"])
                 now = datetime.now(timezone.utc)
+                files_list = list(job.get("files") or [])
                 if row:
                     row.status = job["status"]
                     row.progress = float(job.get("progress") or 0.0)
@@ -315,6 +355,8 @@ class MediaDownloader:
                     row.title = str(job.get("title") or "")
                     row.playlist_count = int(job.get("playlist_count") or 0)
                     row.playlist_index = int(job.get("playlist_index") or 0)
+                    if hasattr(row, "files"):
+                        row.files = files_list
                     row.updated_at = now
                 else:
                     created_dt = datetime.fromtimestamp(job["created"], timezone.utc) if job.get("created") else now
@@ -339,6 +381,8 @@ class MediaDownloader:
                         created_at=created_dt,
                         updated_at=now,
                     )
+                    if hasattr(row, "files"):
+                        row.files = files_list
                     s.add(row)
         except Exception as exc:
             logger.debug(f"Failed to persist download job {job.get('id')}: {exc}")
@@ -346,7 +390,7 @@ class MediaDownloader:
     def list_jobs(self) -> list[dict[str, Any]]:
         with self._lock:
             jobs = sorted(self.jobs.values(), key=lambda j: j.get("created", 0), reverse=True)[:50]
-            return [{k: v for k, v in j.items() if k != "abort"} for j in jobs]
+            return [{k: (list(v) if isinstance(v, set) else v) for k, v in j.items() if k != "abort"} for j in jobs]
 
     def _new_job(self, url: str, **kw: Any) -> dict[str, Any]:
         job_id = uuid.uuid4().hex[:10]
@@ -366,6 +410,8 @@ class MediaDownloader:
             "is_playlist": False,
             "playlist_count": 0,
             "playlist_index": 0,
+            "files": [],
+            "active_files": set(),
             **kw,
         }
         with self._lock:
@@ -389,16 +435,69 @@ class MediaDownloader:
         return True
 
     def _cleanup_partial_files(self, job_id: str, name_hint: str | None = None) -> None:
-        """Removes temporary and incomplete downloads."""
+        """Removes temporary and incomplete downloads belonging strictly to this job without affecting concurrent jobs."""
         try:
             if not self.folder.exists():
                 return
-            for p in self.folder.iterdir():
-                if p.is_file() and (p.suffix in (".part", ".ytdl", ".temp") or (name_hint and name_hint in p.name)):
+            with self._lock:
+                job = self.jobs.get(job_id)
+                tracked_files = set(job.get("active_files") or []) if job else set()
+                # Gather files and identifiers belonging to other active downloads to guarantee they are never deleted
+                protected_files = set()
+                protected_stems = set()
+                for jid, other in self.jobs.items():
+                    if jid != job_id and other.get("status") in ("queued", "running"):
+                        if other.get("custom_name"):
+                            protected_stems.add(safe_filename(other["custom_name"]).lower())
+                        if other.get("video_id"):
+                            protected_stems.add(other["video_id"].lower())
+                        if other.get("output"):
+                            protected_files.add(Path(other["output"]).name.lower())
+                        for af in (other.get("active_files") or []):
+                            protected_files.add(Path(af).name.lower())
+
+            # 1. Remove tracked active files and their part/temp files specifically recorded for this job
+            for fpath_str in list(tracked_files):
+                p = Path(fpath_str)
+                if p.is_file() and p.name.lower() not in protected_files:
                     try:
                         p.unlink(missing_ok=True)
                     except OSError:
                         pass
+                for ext in (".part", ".ytdl", ".temp"):
+                    part_p = p.with_name(p.name + ext)
+                    if part_p.is_file() and part_p.name.lower() not in protected_files:
+                        try:
+                            part_p.unlink(missing_ok=True)
+                        except OSError:
+                            pass
+
+            # 2. Check job_id, name_hint, and video_id for partial files matching this job
+            hints = set()
+            hints.add(job_id.lower())
+            if name_hint:
+                hints.add(safe_filename(name_hint).lower())
+            if job and job.get("video_id"):
+                hints.add(str(job["video_id"]).lower())
+
+            if hints:
+                for p in self.folder.iterdir():
+                    if not p.is_file():
+                        continue
+                    p_name_lower = p.name.lower()
+                    if not any(h in p_name_lower for h in hints):
+                        continue
+                    # Never delete files belonging to other concurrent jobs
+                    if any(prot in p_name_lower for prot in protected_stems) or p_name_lower in protected_files:
+                        continue
+                    # Delete only incomplete or temporary download files
+                    if p.suffix in (".part", ".ytdl", ".temp") or (
+                        p.suffix in (".mp4", ".mp3", ".webm", ".mkv") and job and job.get("status") == "cancelled"
+                    ):
+                        try:
+                            p.unlink(missing_ok=True)
+                        except OSError:
+                            pass
         except Exception as exc:
             logger.debug(f"Cleanup error for {job_id}: {exc}")
 
@@ -517,10 +616,9 @@ class MediaDownloader:
         with self._lock:
             job = self.jobs.get(job_id)
             abort = self._abort_events.get(job_id)
-        if not job or not abort:
-            return
-
-        job["status"] = "running"
+            if not job or not abort or abort.is_set() or job.get("status") in ("cancelled", "interrupted"):
+                return
+            job["status"] = "running"
         self._persist_job(job)
         self.folder.mkdir(parents=True, exist_ok=True)
 
@@ -543,9 +641,14 @@ class MediaDownloader:
             "socket_timeout": 30,
             "retries": 3,
             "max_filesize": 2 * 1024 * 1024 * 1024,  # 2 GB safety ceiling
+            "external_downloader": None,
+            "compat_opts": ["no-external-downloader"],
+            "external_downloader_args": None,
         }
         if self.ffmpeg_exe and os.path.exists(self.ffmpeg_exe):
-            ydl_opts["ffmpeg_location"] = os.path.dirname(self.ffmpeg_exe)
+            ffmpeg_dir = os.path.dirname(os.path.abspath(self.ffmpeg_exe))
+            if os.path.isdir(ffmpeg_dir):
+                ydl_opts["ffmpeg_location"] = ffmpeg_dir
 
         if audio_only:
             ydl_opts["format"] = "bestaudio/best"
@@ -571,6 +674,26 @@ class MediaDownloader:
                 raise DownloadCancelledError("Download cancelled.")
 
             status = d.get("status")
+            filename = d.get("filename")
+            if filename:
+                job.setdefault("active_files", set()).add(str(filename))
+            tmp = d.get("tmpfilename")
+            if tmp:
+                job.setdefault("active_files", set()).add(str(tmp))
+
+            info_dict = d.get("info_dict") or {}
+            if "id" in info_dict and not job.get("video_id"):
+                job["video_id"] = str(info_dict["id"])
+
+            p_idx = info_dict.get("playlist_index") or d.get("playlist_index")
+            p_cnt = info_dict.get("playlist_count") or d.get("playlist_count") or info_dict.get("n_entries")
+            if p_idx:
+                job["is_playlist"] = True
+                job["playlist_index"] = int(p_idx)
+            if p_cnt:
+                job["is_playlist"] = True
+                job["playlist_count"] = int(p_cnt)
+
             if status == "downloading":
                 now = time.time()
                 if now - last_progress_time > 0.2:
@@ -609,15 +732,44 @@ class MediaDownloader:
                 if not info:
                     raise MediaDownloaderError("Failed to extract media.")
 
-                if "entries" in info:
-                    # Playlist finished
+                downloaded_files: list[str] = []
+                entries = info.get("entries")
+                if entries:
                     job["is_playlist"] = True
-                    job["playlist_count"] = len(info.get("entries") or [])
-                    job["playlist_index"] = job["playlist_count"]
+                    job["playlist_count"] = len(entries)
+                    for entry in entries:
+                        if not entry:
+                            continue
+                        epaths = []
+                        if "requested_downloads" in entry:
+                            for rd in entry["requested_downloads"]:
+                                if rd.get("filepath"):
+                                    epaths.append(Path(rd["filepath"]))
+                        if not epaths:
+                            ep = ydl.prepare_filename(entry)
+                            candidate = Path(ep)
+                            if audio_only and candidate.with_suffix(".mp3").is_file():
+                                epaths.append(candidate.with_suffix(".mp3"))
+                            elif candidate.is_file():
+                                epaths.append(candidate)
+                            elif candidate.with_suffix(".mp4").is_file():
+                                epaths.append(candidate.with_suffix(".mp4"))
 
-                if "requested_downloads" in info and info["requested_downloads"]:
-                    final_path = Path(info["requested_downloads"][0]["filepath"])
-                else:
+                        for p in epaths:
+                            if p.is_file() and p.stat().st_size > 0:
+                                downloaded_files.append(p.name)
+                                job.setdefault("active_files", set()).add(str(p))
+
+                elif "requested_downloads" in info and info["requested_downloads"]:
+                    for rd in info["requested_downloads"]:
+                        fp = rd.get("filepath")
+                        if fp:
+                            p = Path(fp)
+                            if p.is_file() and p.stat().st_size > 0:
+                                downloaded_files.append(p.name)
+                                job.setdefault("active_files", set()).add(str(p))
+
+                if not downloaded_files:
                     final_path = Path(ydl.prepare_filename(info))
                     if audio_only and final_path.suffix != ".mp3":
                         candidate = final_path.with_suffix(".mp3")
@@ -627,26 +779,40 @@ class MediaDownloader:
                         candidate = final_path.with_suffix(".mp4")
                         if candidate.is_file():
                             final_path = candidate
+                    if final_path.is_file() and final_path.stat().st_size > 0:
+                        downloaded_files.append(final_path.name)
+                        job.setdefault("active_files", set()).add(str(final_path))
 
-                # Verify file actually exists and has size
-                if not final_path.is_file() or final_path.stat().st_size == 0:
+                # Verify all expected files exist and have non-zero size
+                if not downloaded_files:
                     raise MediaDownloaderError("Output file was not created or is empty.")
+
+                for fname in downloaded_files:
+                    fpath = self.folder / fname
+                    if not fpath.is_file() or fpath.stat().st_size == 0:
+                        raise MediaDownloaderError(f"Downloaded file {fname} is missing or empty.")
 
                 job["status"] = "done"
                 job["progress"] = 1.0
-                job["output"] = final_path.name
-                job["title"] = info.get("title", final_path.stem)
-                job["bytes"] = final_path.stat().st_size
+                job["output"] = downloaded_files[0]
+                job["files"] = downloaded_files
+                job["title"] = info.get("title", Path(downloaded_files[0]).stem)
+                job["bytes"] = sum((self.folder / f).stat().st_size for f in downloaded_files if (self.folder / f).is_file())
                 job["total_bytes"] = job["bytes"]
+                if job.get("is_playlist"):
+                    job["playlist_index"] = len(downloaded_files)
 
-                # Publish notification to bus if available
+                # Publish notification to bus for each completed file
                 if self.kernel and hasattr(self.kernel, "bus"):
-                    self.kernel.bus.publish("media.downloaded", {
-                        "job_id": job_id,
-                        "filename": final_path.name,
-                        "title": job["title"],
-                        "size": job["bytes"],
-                    })
+                    for fname in downloaded_files:
+                        fp = self.folder / fname
+                        self.kernel.bus.publish("media.downloaded", {
+                            "job_id": job_id,
+                            "filename": fname,
+                            "title": job["title"],
+                            "size": fp.stat().st_size if fp.is_file() else 0,
+                            "is_playlist": job.get("is_playlist", False),
+                        })
 
         except DownloadCancelledError:
             job["status"] = "cancelled"

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "stark-ai-api"
-version = "2.1.0"
+version = "2.1.1"
 description = "STARK AI - Project Genesis: governed multi-agent social media team on free models (API)"
 requires-python = ">=3.11"
 license = { text = "MIT" }

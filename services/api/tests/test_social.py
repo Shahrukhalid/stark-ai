@@ -707,3 +707,38 @@ async def test_image_changed_after_approval_is_not_uploaded(settings):
         social.SocialPublish.Input(item_id=item["id"]), _ctx(k, "dum_e"))
     assert not res.ok and "changed after the post was checked" in res.summary
     assert calls == []  # nothing was sent
+
+
+async def test_concurrent_publishing_quota_and_dedup_safety(settings):
+    """Verifies that concurrent publish attempts are protected by platform locks and deduplication."""
+    settings.mastodon_base_url, settings.mastodon_access_token = "https://social.example", "masto-token-123"
+
+    calls = []
+    def handler(req: httpx.Request):
+        calls.append(req.url.path)
+        return httpx.Response(200, json={"id": f"masto-{len(calls)}", "url": f"https://social.example/@user/{len(calls)}"})
+
+    k, _ = make_kernel(settings)
+    soc = Social(settings, httpx.MockTransport(handler))
+
+    # Draft two items with identical text on Mastodon
+    text_content = "Special release announcement #announcement"
+    item1 = await _draft(k, platform="mastodon", text=text_content)
+    item2 = await _draft(k, platform="mastodon", text=text_content)
+
+    # Launch both publish calls concurrently
+    res1, res2 = await asyncio.gather(
+        social.publish_item(k, soc, settings, item1["id"], approved_fp=None, actor="user"),
+        social.publish_item(k, soc, settings, item2["id"], approved_fp=None, actor="user"),
+    )
+
+    # Exactly one must succeed, and the second must be blocked by duplicate post prevention or concurrency lock
+    results = [res1, res2]
+    succeeded = [r for r in results if r.ok]
+    blocked = [r for r in results if not r.ok]
+
+    assert len(succeeded) == 1, f"Expected 1 success, got {len(succeeded)}"
+    assert len(blocked) == 1, f"Expected 1 blocked, got {len(blocked)}"
+    assert blocked[0].error in ("duplicate_post", "publishing_policy_violation", "not_publishable")
+    assert len(calls) == 1, f"Expected exactly 1 external network call, got {len(calls)}"
+

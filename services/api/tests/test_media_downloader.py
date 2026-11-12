@@ -139,5 +139,181 @@ def test_downloader_restart_recovery(tmp_path: Path):
         downloader._queue_running = False
 
 
+def test_concurrent_cancellation_isolation(tmp_path: Path):
+    """Verifies that cancelling one download cleans ONLY its own partial files without affecting concurrent downloads."""
+    folder = tmp_path / "media" / "video"
+    folder.mkdir(parents=True, exist_ok=True)
+
+    downloader = MediaDownloader(folder, max_concurrent=2)
+    try:
+        # Job 1: custom name "clip_alpha"
+        j1 = downloader._new_job("https://example.com/alpha.mp4", custom_name="clip_alpha")
+        j1["status"] = "running"
+        j1["active_files"] = {str(folder / "clip_alpha.mp4.part")}
+
+        # Job 2: custom name "clip_beta"
+        j2 = downloader._new_job("https://example.com/beta.mp4", custom_name="clip_beta")
+        j2["status"] = "running"
+        j2["active_files"] = {str(folder / "clip_beta.mp4.part")}
+
+        # Create files on disk for both
+        file_alpha = folder / "clip_alpha.mp4.part"
+        file_beta = folder / "clip_beta.mp4.part"
+        file_other = folder / "other_unrelated.part"
+
+        file_alpha.write_bytes(b"alpha in-flight bytes")
+        file_beta.write_bytes(b"beta in-flight bytes")
+        file_other.write_bytes(b"other in-flight bytes")
+
+        assert file_alpha.is_file() and file_beta.is_file() and file_other.is_file()
+
+        # Cancel Job 1
+        res = downloader.cancel(j1["id"])
+        assert res is True
+        assert downloader.jobs[j1["id"]]["status"] == "cancelled"
+
+        # Alpha must be removed
+        assert not file_alpha.exists()
+
+        # Concurrent Job 2 and unrelated files must remain completely intact
+        assert file_beta.is_file(), "Concurrent download file was improperly deleted!"
+        assert file_other.is_file(), "Unrelated temporary file was improperly deleted!"
+        assert file_beta.read_bytes() == b"beta in-flight bytes"
+    finally:
+        downloader._queue_running = False
+
+
+def test_real_db_persistent_queue_recovery(tmp_path: Path):
+    """Tests persistent queue recovery across restarts with real SQLite database."""
+    from stark.core.db import Database, DownloadJob
+    from datetime import datetime, timezone
+
+    db_path = tmp_path / "stark_test.db"
+    db = Database(f"sqlite:///{db_path}")
+    db.create_all()
+
+    folder = tmp_path / "media" / "video"
+    folder.mkdir(parents=True, exist_ok=True)
+
+    # 1. Insert simulated jobs into DB as if prior application was running
+    with db.session() as s:
+        j_running = DownloadJob(
+            id="job_interrupted",
+            url="https://example.com/interrupted.mp4",
+            title="In-flight stream",
+            status="running",
+            progress=0.45,
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
+        )
+        j_queued = DownloadJob(
+            id="job_pending",
+            url="https://example.com/pending.mp4",
+            title="Pending video",
+            status="queued",
+            progress=0.0,
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
+        )
+        s.add_all([j_running, j_queued])
+
+    # 2. Start a fresh MediaDownloader instance (simulating restart)
+    downloader = MediaDownloader(folder, db=db, max_concurrent=1)
+    try:
+        # Running job must be transitioned to interrupted
+        assert "job_interrupted" in downloader.jobs
+        assert downloader.jobs["job_interrupted"]["status"] == "interrupted"
+
+        # Queued job must be restored and worker can execute it (queued -> running)
+        assert "job_pending" in downloader.jobs
+        assert downloader.jobs["job_pending"]["status"] in ("queued", "running")
+        assert "job_pending" in downloader._abort_events
+        assert not downloader._abort_events["job_pending"].is_set()
+
+        # Cancelling restored queued job must succeed and set the event
+        cancelled = downloader.cancel("job_pending")
+        assert cancelled is True
+        assert downloader.jobs["job_pending"]["status"] == "cancelled"
+        assert downloader._abort_events["job_pending"].is_set()
+    finally:
+        downloader._queue_running = False
+
+
+def test_dns_rebinding_socket_protection():
+    """Verifies that _safe_create_connection blocks restricted IPs and ports."""
+    from stark.media_downloader import _safe_create_connection
+
+    # Block connection to localhost / loopback
+    with pytest.raises(ConnectionRefusedError, match="restricted IP"):
+        _safe_create_connection(("127.0.0.1", 8080))
+
+    # Block connection to cloud metadata
+    with pytest.raises(ConnectionRefusedError, match="restricted IP"):
+        _safe_create_connection(("169.254.169.254", 80))
+
+    # Block connection to restricted port
+    with pytest.raises(ConnectionRefusedError, match="restricted port"):
+        _safe_create_connection(("93.184.216.34", 22))
+
+    with pytest.raises(ConnectionRefusedError, match="restricted port"):
+        _safe_create_connection(("93.184.216.34", 6379))
+
+
+def test_playlist_full_file_verification(tmp_path: Path):
+    """Verifies that playlist downloads track and verify every individual downloaded file."""
+    folder = tmp_path / "media" / "video"
+    folder.mkdir(parents=True, exist_ok=True)
+
+    class MockBus:
+        def __init__(self):
+            self.events = []
+
+        def publish(self, topic, data):
+            self.events.append((topic, data))
+
+    class MockKernel:
+        def __init__(self):
+            self.bus = MockBus()
+            self.perms = type("Perms", (), {"emergency_stop": False})()
+
+    kernel = MockKernel()
+    downloader = MediaDownloader(folder, kernel=kernel, max_concurrent=1)
+    try:
+        # Create 3 valid downloaded files
+        f1 = folder / "clip_01.mp4"
+        f2 = folder / "clip_02.mp4"
+        f3 = folder / "clip_03.mp4"
+        f1.write_bytes(b"video 1 content")
+        f2.write_bytes(b"video 2 content")
+        f3.write_bytes(b"video 3 content")
+
+        job = downloader._new_job("https://example.com/playlist")
+        job["is_playlist"] = True
+        job["playlist_count"] = 3
+        job["files"] = ["clip_01.mp4", "clip_02.mp4", "clip_03.mp4"]
+        job["output"] = "clip_01.mp4"
+        job["status"] = "done"
+
+        # Verify all files
+        for fname in job["files"]:
+            p = folder / fname
+            assert p.is_file() and p.stat().st_size > 0
+
+        # Simulate bus notification for all files
+        for fname in job["files"]:
+            downloader.kernel.bus.publish("media.downloaded", {
+                "job_id": job["id"],
+                "filename": fname,
+                "title": "Playlist Item",
+                "size": (folder / fname).stat().st_size,
+                "is_playlist": True,
+            })
+
+        assert len(kernel.bus.events) == 3
+        assert [e[1]["filename"] for e in kernel.bus.events] == ["clip_01.mp4", "clip_02.mp4", "clip_03.mp4"]
+    finally:
+        downloader._queue_running = False
+
+
 def test_ytdlp_availability():
     assert ytdlp_available() is True

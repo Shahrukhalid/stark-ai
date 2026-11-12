@@ -270,6 +270,7 @@ class DownloadJob(Base):
     is_playlist: Mapped[bool] = mapped_column(Boolean, default=False)
     playlist_count: Mapped[int] = mapped_column(Integer, default=0)
     playlist_index: Mapped[int] = mapped_column(Integer, default=0)
+    files: Mapped[list[Any]] = mapped_column(JSON, default=list)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
