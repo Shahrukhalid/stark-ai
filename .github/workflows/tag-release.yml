@@ -1,27 +1,38 @@
-# When the version on main changes, creates the tag vX.Y.Z (once) and starts the Desktop workflow for it, which builds
-# the installers and publishes the release. Tags made with the workflow token start no push-triggered runs, so the
-# Desktop workflow is started here directly.
+# When the version on main changes, waits for the CI workflow on that exact commit to succeed
+# before creating the tag vX.Y.Z and triggering the Desktop workflow.
+# This prevents broken releases or premature tags from racing ahead of CI and security checks.
 name: Tag release
 on:
   push:
     branches: [main]
     paths: [services/api/stark/__init__.py]
   workflow_dispatch:
+    inputs:
+      target_commit:
+        description: 'Commit SHA to tag and release (leave blank for HEAD)'
+        required: false
+        default: ''
+
 permissions:
   contents: read
+
 concurrency: tag-release
+
 jobs:
   tag:
     permissions:
       contents: write
       actions: write
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Create the tag and start the release
+        with:
+          ref: ${{ inputs.target_commit || github.sha }}
+      - name: Verify CI completion and create release tag
         env:
           GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ inputs.target_commit || github.sha }}
         run: |
           set -euo pipefail
           version="$(python3 -c 'import re;print(re.search(r"__version__ = \"([0-9]+\.[0-9]+\.[0-9]+)\"", open("services/api/stark/__init__.py").read()).group(1))')"
@@ -29,6 +40,28 @@ jobs:
           if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" >/dev/null 2>&1; then
             echo "$tag already exists; nothing to do"; exit 0
           fi
-          gh api "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/$tag" -f sha="$GITHUB_SHA" >/dev/null
+
+          echo "Release Gate: Checking CI completion on commit $TARGET_SHA..."
+          deadline=$((SECONDS + 1200))
+          while [ $SECONDS -lt $deadline ]; do
+            runs_json="$(gh run list --workflow ci.yml --commit "$TARGET_SHA" --json databaseId,status,conclusion --limit 1 || echo '[]')"
+            status="$(echo "$runs_json" | python3 -c 'import sys, json; data=json.load(sys.stdin); print(data[0]["status"] if data else "waiting")')"
+            conclusion="$(echo "$runs_json" | python3 -c 'import sys, json; data=json.load(sys.stdin); print(data[0]["conclusion"] if data else "")')"
+            
+            if [ "$status" = "completed" ]; then
+              if [ "$conclusion" = "success" ]; then
+                echo "Release gate passed: CI completed successfully on $TARGET_SHA"
+                break
+              else
+                echo "Release gate blocked: CI completed with status '$status' and conclusion '$conclusion' on $TARGET_SHA"
+                exit 1
+              fi
+            fi
+            echo "Waiting for CI workflow to complete (current status: $status)..."
+            sleep 20
+          done
+
+          echo "Creating Git tag $tag for commit $TARGET_SHA"
+          gh api "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/$tag" -f sha="$TARGET_SHA" >/dev/null
           gh workflow run desktop.yml --ref "$tag"
-          echo "Tagged $tag and started the Desktop release build"
+          echo "Tagged $tag and started Desktop release builds."

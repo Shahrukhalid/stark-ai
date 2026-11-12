@@ -65,3 +65,29 @@ def test_content_deduplication_fingerprint():
     assert h1 == h2
     assert h1 != h3
     assert len(h1) == 64
+
+
+def test_persistent_cooldown_sync():
+    class DummyDB:
+        def __init__(self):
+            self.store = {}
+        def get_setting(self, k, default=None):
+            return self.store.get(k, default)
+        def set_setting(self, k, v):
+            self.store[k] = v
+
+    db = DummyDB()
+    from stark import publishing_policy
+
+    publishing_policy.clear_cooldown("snapchat", db=db)
+    publishing_policy.record_rate_limit("snapchat", backoff_minutes=10, db=db)
+    assert "snapchat" in db.store.get("publishing_cooldowns", {})
+
+    # Clear memory cache
+    publishing_policy._COOLDOWNS.clear()
+    assert publishing_policy.get_cooldown_remaining("snapchat") == 0.0
+
+    # Sync from DB restores cooldown
+    publishing_policy.sync_cooldowns_from_db(db)
+    assert publishing_policy.get_cooldown_remaining("snapchat") > 500
+    publishing_policy.clear_cooldown("snapchat", db=db)

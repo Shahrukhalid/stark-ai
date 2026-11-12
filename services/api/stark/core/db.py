@@ -11,6 +11,7 @@ from typing import Any, Iterator
 
 from sqlalchemy import (
     JSON,
+    BigInteger,
     Boolean,
     DateTime,
     Float,
@@ -245,6 +246,32 @@ class ContentItem(Base):
     # Bluesky: who may reply (everyone | followers | following | mentioned | nobody); None = everyone
     reply_control: Mapped[str | None] = mapped_column(String(16), nullable=True, default=None)
     brand: Mapped[str] = mapped_column(String(80), default=_active_brand_name, index=True)  # "" = no brand
+
+
+class DownloadJob(Base):
+    """Persistent record of a web video download / media acquisition job."""
+
+    __tablename__ = "download_jobs"
+    id: Mapped[str] = mapped_column(String(40), primary_key=True)
+    url: Mapped[str] = mapped_column(Text)
+    title: Mapped[str] = mapped_column(String(300), default="")
+    status: Mapped[str] = mapped_column(String(24), default="queued", index=True)
+    # queued | running | done | failed | cancelled | interrupted
+    progress: Mapped[float] = mapped_column(Float, default=0.0)
+    speed: Mapped[str] = mapped_column(String(40), default="")
+    eta: Mapped[str] = mapped_column(String(40), default="")
+    bytes_downloaded: Mapped[int] = mapped_column(BigInteger, default=0)
+    total_bytes: Mapped[int] = mapped_column(BigInteger, default=0)
+    output_file: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    resolution: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    audio_only: Mapped[bool] = mapped_column(Boolean, default=False)
+    custom_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    is_playlist: Mapped[bool] = mapped_column(Boolean, default=False)
+    playlist_count: Mapped[int] = mapped_column(Integer, default=0)
+    playlist_index: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
 class Automation(Base):

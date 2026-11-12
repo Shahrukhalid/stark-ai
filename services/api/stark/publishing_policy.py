@@ -111,21 +111,53 @@ DEFAULT_POLICY = PlatformPolicy(
 _COOLDOWNS: dict[str, float] = {}
 
 
+def sync_cooldowns_from_db(db: Any) -> None:
+    """Loads persistent rate-limit cooldowns from the settings store."""
+    if not db:
+        return
+    try:
+        saved = db.get_setting("publishing_cooldowns", {})
+        if isinstance(saved, dict):
+            now = time.time()
+            for k, v in saved.items():
+                if isinstance(v, (int, float)) and v > now:
+                    _COOLDOWNS[k.lower()] = float(v)
+    except Exception:
+        pass
+
+
 def get_policy(platform: str) -> PlatformPolicy:
     return POLICIES.get(platform.lower(), DEFAULT_POLICY)
 
 
-def record_rate_limit(platform: str, backoff_minutes: int | None = None) -> float:
-    """Record an HTTP 429 / rate-limit response and set cooldown."""
+def record_rate_limit(platform: str, backoff_minutes: int | None = None, db: Any = None) -> float:
+    """Record an HTTP 429 / rate-limit response and set cooldown, persisting to DB if available."""
     policy = get_policy(platform)
     mins = backoff_minutes if backoff_minutes is not None else policy.rate_limit_backoff_minutes
     until = time.time() + mins * 60
     _COOLDOWNS[platform.lower()] = until
+    if db:
+        try:
+            current = db.get_setting("publishing_cooldowns", {})
+            if not isinstance(current, dict):
+                current = {}
+            current[platform.lower()] = until
+            db.set_setting("publishing_cooldowns", current)
+        except Exception:
+            pass
     return until
 
 
-def clear_cooldown(platform: str) -> None:
+def clear_cooldown(platform: str, db: Any = None) -> None:
     _COOLDOWNS.pop(platform.lower(), None)
+    if db:
+        try:
+            current = db.get_setting("publishing_cooldowns", {})
+            if isinstance(current, dict) and platform.lower() in current:
+                current.pop(platform.lower(), None)
+                db.set_setting("publishing_cooldowns", current)
+        except Exception:
+            pass
 
 
 def get_cooldown_remaining(platform: str) -> float:

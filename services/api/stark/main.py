@@ -264,6 +264,9 @@ class VideoIn(BaseModel):
     saturation: float = Field(1.0, ge=0.0, le=3.0)
     gamma: float = Field(1.0, ge=0.1, le=10.0)
     watermark_text: str | None = Field(None, max_length=100)
+    watermark_image: str | None = Field(None, max_length=200)
+    watermark_opacity: float = Field(0.85, ge=0.05, le=1.0)
+    watermark_scale: float = Field(0.2, ge=0.05, le=1.0)
     watermark_position: Literal["top-left", "top-right", "bottom-left", "bottom-right", "center"] = "bottom-right"
     watermark_size: int = Field(24, ge=12, le=72)
     watermark_color: Literal["white", "yellow", "cyan"] = "white"
@@ -424,7 +427,9 @@ def create_app(settings: Settings | None = None, providers: dict[str, ModelProvi
         scheduler = asyncio.create_task(_scheduler_loop(holder["k"]))
         holder["k"].webhooks = hub.Webhooks(holder["k"], settings)
         holder["k"].video = video.Studio(settings)
-        holder["k"].media_downloader = media_downloader.MediaDownloader(video.folder(settings), video.ffmpeg_path())
+        holder["k"].media_downloader = media_downloader.MediaDownloader(
+            video.folder(settings), video.ffmpeg_path(), db=holder["k"].db, kernel=holder["k"]
+        )
         background = [asyncio.create_task(holder["k"].notifier.run()), asyncio.create_task(holder["k"].webhooks.run()),
                       asyncio.create_task(hub.recycler_loop(holder["k"], social, settings)),
                       asyncio.create_task(_snapshot_loop(holder["k"], social)),
@@ -1408,7 +1413,9 @@ def create_app(settings: Settings | None = None, providers: dict[str, ModelProvi
     @app.post("/api/video/download", dependencies=[api])
     async def video_download(body: DownloadIn, k: Kernel = Depends(kernel)):
         if not hasattr(k, "media_downloader"):
-            k.media_downloader = media_downloader.MediaDownloader(video.folder(settings), video.ffmpeg_path())
+            k.media_downloader = media_downloader.MediaDownloader(
+                video.folder(settings), video.ffmpeg_path(), db=k.db, kernel=k
+            )
         try:
             job = k.media_downloader.start_download(
                 url=body.url,
@@ -1424,7 +1431,9 @@ def create_app(settings: Settings | None = None, providers: dict[str, ModelProvi
     @app.get("/api/video/download/jobs", dependencies=[api])
     async def video_download_jobs(k: Kernel = Depends(kernel)):
         if not hasattr(k, "media_downloader"):
-            k.media_downloader = media_downloader.MediaDownloader(video.folder(settings), video.ffmpeg_path())
+            k.media_downloader = media_downloader.MediaDownloader(
+                video.folder(settings), video.ffmpeg_path(), db=k.db, kernel=k
+            )
         return {"jobs": k.media_downloader.list_jobs()}
 
     @app.delete("/api/video/download/jobs/{job_id}", dependencies=[api])
@@ -1438,7 +1447,9 @@ def create_app(settings: Settings | None = None, providers: dict[str, ModelProvi
     @app.post("/api/video/analyze", dependencies=[api])
     async def video_analyze(body: DownloadIn, k: Kernel = Depends(kernel)):
         if not hasattr(k, "media_downloader"):
-            k.media_downloader = media_downloader.MediaDownloader(video.folder(settings), video.ffmpeg_path())
+            k.media_downloader = media_downloader.MediaDownloader(
+                video.folder(settings), video.ffmpeg_path(), db=k.db, kernel=k
+            )
         try:
             return await asyncio.to_thread(k.media_downloader.analyze, body.url)
         except media_downloader.MediaDownloaderError as exc:

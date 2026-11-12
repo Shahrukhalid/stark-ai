@@ -83,6 +83,19 @@ jobs:
           "/c/Program Files (x86)/Inno Setup 6/ISCC.exe" desktop/installer.iss
       - name: Keep the installer with this run
         run: echo "Built dist/${{ matrix.asset }} ($(du -h "dist/${{ matrix.asset }}" | cut -f1))"
+      - name: Smoke-test installer asset integrity
+        run: |
+          ASSET_PATH="dist/${{ matrix.asset }}"
+          if [ ! -f "$ASSET_PATH" ]; then
+            echo "ERROR: Expected installer $ASSET_PATH was not produced!"
+            exit 1
+          fi
+          SIZE=$(wc -c < "$ASSET_PATH" | tr -d ' ')
+          if [ "$SIZE" -lt 10485760 ]; then
+            echo "ERROR: Installer $ASSET_PATH is suspiciously small ($SIZE bytes)!"
+            exit 1
+          fi
+          echo "Integrity check passed: $ASSET_PATH ($SIZE bytes)"
       - name: Attach to the release
         if: startsWith(github.ref, 'refs/tags/v')
         env:

@@ -1,7 +1,7 @@
 "use client";
 
 import { Clapperboard, Download, DownloadCloud, FileText, Globe, Image as ImageIcon, LoaderCircle, Mic, Scissors, ShieldCheck, Sliders, Trash2, Upload, X } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useStark } from "@/lib/store";
 import { Section } from "./ui";
 
@@ -34,11 +34,15 @@ export function VideoStudio({ talkTo }: { talkTo: (agentId: string, text?: strin
   const [dlRes, setDlRes] = useState("");
   const [dlAudio, setDlAudio] = useState(false);
   const [dlJobs, setDlJobs] = useState<any[]>([]);
+  const [analyzing, setAnalyzing] = useState(false);
+  const [metaInfo, setMetaInfo] = useState<any>(null);
+  const [wmMode, setWmMode] = useState<"text" | "image">("text");
+  const lastDoneIdsRef = useRef<Set<string>>(new Set());
   const [o, setO] = useState({
     file: "", presets: ["vertical"] as string[], format: "mp4", fit: "pad", start: "", end: "", mute: false, speed: 1, volume: 1, fade: 0, transition: 0.5,
     captions: "none", caption_source: "script", animation: "none", transition_type: "fade", script: "", srt: "", style: { size: 14, color: "white", position: "bottom", box: false },
     normalize_audio: false, brightness: 0, contrast: 1, saturation: 1, gamma: 1,
-    watermark_text: "", watermark_position: "bottom-right", watermark_size: 24, watermark_color: "white",
+    watermark_text: "", watermark_image: "", watermark_opacity: 0.85, watermark_scale: 0.2, watermark_position: "bottom-right", watermark_size: 24, watermark_color: "white",
   });
   const set = (k: keyof typeof o, v: any) => setO((x) => ({ ...x, [k]: v }));
 
@@ -131,9 +135,35 @@ export function VideoStudio({ talkTo }: { talkTo: (agentId: string, text?: strin
 
   const pollDlJobs = useCallback(() => {
     client.get<{ jobs: any[] }>("/api/video/download/jobs").then((r) => {
-      setDlJobs(r.jobs || []);
+      const jobs = r.jobs || [];
+      setDlJobs(jobs);
+      let newlyCompleted = false;
+      for (const j of jobs) {
+        if (j.status === "done" && !lastDoneIdsRef.current.has(j.id)) {
+          lastDoneIdsRef.current.add(j.id);
+          newlyCompleted = true;
+        }
+      }
+      if (newlyCompleted) {
+        load();
+      }
     }).catch(() => {});
-  }, [client]);
+  }, [client, load]);
+
+  async function analyzeWebUrl() {
+    if (!dlUrl.trim()) return;
+    setAnalyzing(true);
+    setMetaInfo(null);
+    try {
+      const info = await client.post<any>("/api/video/analyze", { url: dlUrl });
+      setMetaInfo(info);
+      notify("success", "Media metadata retrieved");
+    } catch (e: any) {
+      notify("error", e.message);
+    } finally {
+      setAnalyzing(false);
+    }
+  }
 
   useEffect(() => {
     if (!showDownloadModal && !dlJobs.some((j) => j.status === "running" || j.status === "queued")) return;
@@ -269,38 +299,77 @@ export function VideoStudio({ talkTo }: { talkTo: (agentId: string, text?: strin
 
             <details className="rounded-lg border border-[var(--color-line)] p-2">
               <summary className="cursor-pointer text-xs font-medium flex items-center gap-1.5"><Sliders size={13} className="text-cyan-300" /> Color & visual grading</summary>
-              <div className="mt-2 grid gap-2 sm:grid-cols-3 text-xs">
+              <div className="mt-2 grid gap-2 grid-cols-2 sm:grid-cols-4 text-xs">
                 <label>{label(`Brightness ${Math.round(o.brightness * 100)}%`)}<input className="mt-2 w-full" type="range" min={-0.5} max={0.5} step={0.05} value={o.brightness} onChange={(e) => set("brightness", Number(e.target.value))} /></label>
                 <label>{label(`Contrast ${o.contrast.toFixed(2)}×`)}<input className="mt-2 w-full" type="range" min={0.5} max={1.5} step={0.05} value={o.contrast} onChange={(e) => set("contrast", Number(e.target.value))} /></label>
                 <label>{label(`Saturation ${o.saturation.toFixed(1)}×`)}<input className="mt-2 w-full" type="range" min={0} max={2} step={0.1} value={o.saturation} onChange={(e) => set("saturation", Number(e.target.value))} /></label>
+                <label>{label(`Gamma ${o.gamma.toFixed(2)}`)}<input className="mt-2 w-full" type="range" min={0.5} max={2.0} step={0.05} value={o.gamma} onChange={(e) => set("gamma", Number(e.target.value))} /></label>
               </div>
             </details>
 
             <details className="rounded-lg border border-[var(--color-line)] p-2">
-              <summary className="cursor-pointer text-xs font-medium flex items-center gap-1.5"><ShieldCheck size={13} className="text-cyan-300" /> Watermark</summary>
+              <summary className="cursor-pointer text-xs font-medium flex items-center gap-1.5"><ShieldCheck size={13} className="text-cyan-300" /> Watermark & Branding</summary>
               <div className="mt-2 space-y-2 text-xs">
-                <input className="input w-full" type="text" placeholder="Watermark text (e.g. @yourbrand)" value={o.watermark_text} onChange={(e) => set("watermark_text", e.target.value)} />
-                {o.watermark_text && (
-                  <div className="flex flex-wrap items-center gap-2">
-                    <label>{label("Position")}
-                      <select className="input mt-1 !w-auto !py-1" value={o.watermark_position} onChange={(e) => set("watermark_position", e.target.value)}>
-                        <option value="bottom-right">Bottom Right</option>
-                        <option value="bottom-left">Bottom Left</option>
-                        <option value="top-right">Top Right</option>
-                        <option value="top-left">Top Left</option>
-                        <option value="center">Center</option>
-                      </select>
-                    </label>
-                    <label>{label("Size")}
-                      <input className="input mt-1 !w-16 !py-1" type="number" min={12} max={72} value={o.watermark_size} onChange={(e) => set("watermark_size", Number(e.target.value))} />
-                    </label>
-                    <label>{label("Color")}
-                      <select className="input mt-1 !w-auto !py-1" value={o.watermark_color} onChange={(e) => set("watermark_color", e.target.value)}>
-                        <option value="white">White</option>
-                        <option value="yellow">Yellow</option>
-                        <option value="cyan">Cyan</option>
-                      </select>
-                    </label>
+                <div className="flex gap-4">
+                  <label className="flex items-center gap-1 cursor-pointer">
+                    <input type="radio" checked={wmMode === "text"} onChange={() => setWmMode("text")} />
+                    <span>Text Watermark</span>
+                  </label>
+                  <label className="flex items-center gap-1 cursor-pointer">
+                    <input type="radio" checked={wmMode === "image"} onChange={() => setWmMode("image")} />
+                    <span>Logo / Image</span>
+                  </label>
+                </div>
+
+                {wmMode === "text" ? (
+                  <>
+                    <input className="input w-full" type="text" placeholder="Watermark text (e.g. @yourbrand)" value={o.watermark_text} onChange={(e) => set("watermark_text", e.target.value)} />
+                    {o.watermark_text && (
+                      <div className="flex flex-wrap items-center gap-2">
+                        <label>{label("Position")}
+                          <select className="input mt-1 !w-auto !py-1" value={o.watermark_position} onChange={(e) => set("watermark_position", e.target.value)}>
+                            <option value="bottom-right">Bottom Right</option>
+                            <option value="bottom-left">Bottom Left</option>
+                            <option value="top-right">Top Right</option>
+                            <option value="top-left">Top Left</option>
+                            <option value="center">Center</option>
+                          </select>
+                        </label>
+                        <label>{label("Size")}
+                          <input className="input mt-1 !w-16 !py-1" type="number" min={12} max={72} value={o.watermark_size} onChange={(e) => set("watermark_size", Number(e.target.value))} />
+                        </label>
+                        <label>{label("Color")}
+                          <select className="input mt-1 !w-auto !py-1" value={o.watermark_color} onChange={(e) => set("watermark_color", e.target.value)}>
+                            <option value="white">White</option>
+                            <option value="yellow">Yellow</option>
+                            <option value="cyan">Cyan</option>
+                          </select>
+                        </label>
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <div className="space-y-2">
+                    <input className="input w-full" type="text" placeholder="Image file in video library (e.g. logo.png)" value={o.watermark_image} onChange={(e) => set("watermark_image", e.target.value)} />
+                    {o.watermark_image && (
+                      <div className="flex flex-wrap items-center gap-3">
+                        <label>{label("Position")}
+                          <select className="input mt-1 !w-auto !py-1" value={o.watermark_position} onChange={(e) => set("watermark_position", e.target.value)}>
+                            <option value="bottom-right">Bottom Right</option>
+                            <option value="bottom-left">Bottom Left</option>
+                            <option value="top-right">Top Right</option>
+                            <option value="top-left">Top Left</option>
+                            <option value="center">Center</option>
+                          </select>
+                        </label>
+                        <label>{label(`Opacity ${Math.round(o.watermark_opacity * 100)}%`)}
+                          <input className="mt-1 w-24" type="range" min={0.1} max={1.0} step={0.05} value={o.watermark_opacity} onChange={(e) => set("watermark_opacity", Number(e.target.value))} />
+                        </label>
+                        <label>{label(`Scale ${Math.round(o.watermark_scale * 100)}%`)}
+                          <input className="mt-1 w-24" type="range" min={0.05} max={0.5} step={0.05} value={o.watermark_scale} onChange={(e) => set("watermark_scale", Number(e.target.value))} />
+                        </label>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
@@ -511,14 +580,39 @@ export function VideoStudio({ talkTo }: { talkTo: (agentId: string, text?: strin
                 Acquire public videos, audio or playlists directly to your local library. Supports direct MP4, public social videos, and audio extractions.
               </p>
               <div>
-                <span className="hud-label text-[var(--color-mute)]">Source URL</span>
+                <div className="flex items-center justify-between">
+                  <span className="hud-label text-[var(--color-mute)]">Source URL</span>
+                  <button
+                    className="text-[11px] text-cyan-300 hover:text-cyan-200 disabled:opacity-40"
+                    disabled={!dlUrl.trim() || analyzing}
+                    onClick={analyzeWebUrl}
+                  >
+                    {analyzing ? "Inspecting..." : "Inspect Metadata"}
+                  </button>
+                </div>
                 <input
                   className="input mt-1 w-full text-xs"
                   placeholder="https://... (video, playlist or post link)"
                   value={dlUrl}
-                  onChange={(e) => setDlUrl(e.target.value)}
+                  onChange={(e) => {
+                    setDlUrl(e.target.value);
+                    setMetaInfo(null);
+                  }}
                 />
               </div>
+
+              {metaInfo && (
+                <div className="rounded-lg border border-cyan-800/40 bg-cyan-950/20 p-2.5 space-y-1 text-xs">
+                  <div className="font-medium text-cyan-200 truncate">{metaInfo.title || "Media Stream"}</div>
+                  {metaInfo.author && <div className="text-[var(--color-mute)]">Channel/Author: {metaInfo.author}</div>}
+                  {metaInfo.duration > 0 && (
+                    <div className="text-[var(--color-mute)]">Duration: {Math.floor(metaInfo.duration / 60)}m {Math.floor(metaInfo.duration % 60)}s</div>
+                  )}
+                  {metaInfo.is_playlist && (
+                    <div className="text-emerald-300 font-mono">Playlist: {metaInfo.entries_count || 0} entries</div>
+                  )}
+                </div>
+              )}
               <div className="grid grid-cols-2 gap-2">
                 <label>
                   <span className="hud-label text-[var(--color-mute)]">Max Resolution</span>
@@ -549,20 +643,23 @@ export function VideoStudio({ talkTo }: { talkTo: (agentId: string, text?: strin
                   {dlJobs.map((j) => (
                     <div key={j.id} className="rounded border border-[var(--color-line)] p-2">
                       <div className="flex items-center justify-between">
-                        <span className={`font-mono ${j.status === "done" ? "text-emerald-300" : j.status === "failed" ? "text-red-300" : "text-cyan-300"}`}>
+                        <span className={`font-mono ${j.status === "done" ? "text-emerald-300" : j.status === "failed" ? "text-red-300" : j.status === "interrupted" ? "text-amber-300" : "text-cyan-300"}`}>
                           {j.status} {j.speed ? `· ${j.speed}` : ""} {j.eta ? `· ${j.eta}` : ""}
                         </span>
-                        {j.status === "running" && (
-                          <button className="btn !py-0.5 !px-1.5" onClick={() => cancelWebDownload(j.id)}>Cancel</button>
+                        {(j.status === "running" || j.status === "queued") && (
+                          <button className="btn !py-0.5 !px-1.5 text-red-300 hover:text-red-200" onClick={() => cancelWebDownload(j.id)}>Cancel</button>
                         )}
                       </div>
                       <div className="truncate text-[var(--color-mute)] mt-0.5">{j.output || j.title || j.url}</div>
+                      {j.playlist_count > 0 && (
+                        <div className="text-[11px] font-mono text-cyan-400">Playlist: {j.playlist_index || 0} / {j.playlist_count}</div>
+                      )}
                       {(j.status === "running" || j.status === "queued") && (
                         <div className="mt-1 h-1 overflow-hidden rounded bg-white/10">
                           <div className="h-full bg-cyan-400 transition-all" style={{ width: `${Math.round(j.progress * 100)}%` }} />
                         </div>
                       )}
-                      {j.error && <p className="text-red-300 mt-1">{j.error}</p>}
+                      {j.error && <p className="text-red-300 mt-1 break-words">{j.error}</p>}
                     </div>
                   ))}
                 </div>

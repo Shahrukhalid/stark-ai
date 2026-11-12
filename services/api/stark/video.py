@@ -409,10 +409,11 @@ def build_command(exe: str, src: Path, out: Path, info: dict[str, Any], opts: di
         s = min(3.0, max(0.0, saturation))
         g = min(10.0, max(0.1, gamma))
         vf.append(f"eq=contrast={c:.2f}:brightness={b:.2f}:saturation={s:.2f}:gamma={g:.2f}")
-    # Watermark text overlay
+
+    # Watermark text overlay (hardened against filter injection)
     wm_text = (opts.get("watermark_text") or "").strip()
     if wm_text:
-        safe_wm = re.sub(r"['\\]", "", wm_text)[:80]
+        safe_wm = re.sub(r"['\\:%\\[\\]]", "", wm_text)[:80]
         pos = str(opts.get("watermark_position") or "bottom-right")
         coords = {
             "top-left": "x=24:y=24",
@@ -425,6 +426,19 @@ def build_command(exe: str, src: Path, out: Path, info: dict[str, Any], opts: di
         wm_col = str(opts.get("watermark_color") or "white").lower()
         col_hex = "0xFFFFFF" if wm_col == "white" else "0xFFFF00" if wm_col == "yellow" else "0x00FFFF"
         vf.append(f"drawtext=text='{safe_wm}':fontsize={wm_size}:fontcolor={col_hex}:box=1:boxcolor=0x00000080:boxborderw=4:{coords}")
+
+    # Image watermark / Logo overlay
+    wm_img_name = (opts.get("watermark_image") or "").strip()
+    wm_img_input: str | None = None
+    if wm_img_name:
+        img_p = Path(wm_img_name)
+        if not img_p.is_file() and src.parent:
+            cand = src.parent / img_p.name
+            if cand.is_file():
+                wm_img_input = cand.name
+        elif img_p.is_file():
+            wm_img_input = str(img_p)
+
     af: list[str] = []
     if audio:
         if speed != 1.0:
@@ -436,13 +450,41 @@ def build_command(exe: str, src: Path, out: Path, info: dict[str, Any], opts: di
             af.append("loudnorm=I=-14:LRA=11:TP=-1.5")
         if fade > 0:
             af.append(f"afade=t=in:st=0:d={fade:.2f},afade=t=out:st={out_len - fade:.2f}:d={fade:.2f}")
+
     cmd = [exe, "-hide_banner", "-y", "-nostats", "-progress", "pipe:1",
            "-ss", f"{start:.3f}", "-to", f"{end:.3f}", "-i", src.name]
+
+    if wm_img_input:
+        cmd += ["-i", wm_img_input]
+
     soft = srt_name and opts.get("captions") == "track" and fmt == "mp4"
     if soft:
         cmd += ["-i", srt_name]
-    if vf:
-        cmd += ["-vf", ",".join(vf)]
+
+    if wm_img_input:
+        # Build filter_complex with logo overlay
+        pos = str(opts.get("watermark_position") or "bottom-right")
+        pos_img = {
+            "top-left": "24:24",
+            "top-right": "W-w-24:24",
+            "bottom-left": "24:H-h-24",
+            "bottom-right": "W-w-24:H-h-24",
+            "center": "(W-w)/2:(H-h)/2",
+        }.get(pos, "W-w-24:H-h-24")
+        opacity = min(1.0, max(0.05, float(opts.get("watermark_opacity") or 0.85)))
+        scale = min(1.0, max(0.05, float(opts.get("watermark_scale") or 0.2)))
+        base_vf = ",".join(vf) if vf else "null"
+        filter_complex = (
+            f"[0:v]{base_vf}[base];"
+            f"[1:v]format=rgba,colorchannelmixer=aa={opacity:.2f},scale=iw*{scale:.2f}:-1[wm];"
+            f"[base][wm]overlay={pos_img}[v]"
+        )
+        cmd += ["-filter_complex", filter_complex, "-map", "[v]"]
+        if audio:
+            cmd += ["-map", "0:a:0?"]
+    else:
+        if vf:
+            cmd += ["-vf", ",".join(vf)]
     if af:
         cmd += ["-af", ",".join(af)]
     if fmt == "mp4":
