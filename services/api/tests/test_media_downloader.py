@@ -241,22 +241,23 @@ def test_real_db_persistent_queue_recovery(tmp_path: Path):
 
 def test_dns_rebinding_socket_protection():
     """Verifies that _safe_create_connection blocks restricted IPs and ports."""
-    from stark.media_downloader import _safe_create_connection
+    from stark.media_downloader import _safe_create_connection, ssrf_socket_guard
 
-    # Block connection to localhost / loopback
-    with pytest.raises(ConnectionRefusedError, match="restricted IP"):
-        _safe_create_connection(("127.0.0.1", 8080))
+    with ssrf_socket_guard():
+        # Block connection to localhost / loopback
+        with pytest.raises(ConnectionRefusedError, match="restricted IP"):
+            _safe_create_connection(("127.0.0.1", 8080))
 
-    # Block connection to cloud metadata
-    with pytest.raises(ConnectionRefusedError, match="restricted IP"):
-        _safe_create_connection(("169.254.169.254", 80))
+        # Block connection to cloud metadata
+        with pytest.raises(ConnectionRefusedError, match="restricted IP"):
+            _safe_create_connection(("169.254.169.254", 80))
 
-    # Block connection to restricted port
-    with pytest.raises(ConnectionRefusedError, match="restricted port"):
-        _safe_create_connection(("93.184.216.34", 22))
+        # Block connection to restricted port
+        with pytest.raises(ConnectionRefusedError, match="restricted port"):
+            _safe_create_connection(("93.184.216.34", 22))
 
-    with pytest.raises(ConnectionRefusedError, match="restricted port"):
-        _safe_create_connection(("93.184.216.34", 6379))
+        with pytest.raises(ConnectionRefusedError, match="restricted port"):
+            _safe_create_connection(("93.184.216.34", 6379))
 
 
 def test_playlist_full_file_verification(tmp_path: Path):

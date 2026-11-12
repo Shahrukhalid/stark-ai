@@ -10,6 +10,7 @@ disk space checks, partial-file cleanup, and E-STOP cancellation.
 from __future__ import annotations
 
 import asyncio
+from contextlib import contextmanager
 import html
 import ipaddress
 import logging
@@ -184,10 +185,24 @@ def validate_url(url: str, resolve_dns: bool = True) -> str:
 _YTDLP_HOOKS_INSTALLED = False
 _HOOK_LOCK = threading.Lock()
 _ORIG_CREATE_CONNECTION = socket.create_connection
+_SSRF_GUARD_ACTIVE = threading.local()
+
+
+@contextmanager
+def ssrf_socket_guard():
+    """Activates socket-level SSRF and DNS rebinding protections for the current thread."""
+    _SSRF_GUARD_ACTIVE.active = True
+    try:
+        yield
+    finally:
+        _SSRF_GUARD_ACTIVE.active = False
 
 
 def _safe_create_connection(address, *args, **kwargs):
-    """Enforces SSRF and DNS rebinding protections at the socket connection layer."""
+    """Enforces SSRF and DNS rebinding protections during media acquisition operations."""
+    if not getattr(_SSRF_GUARD_ACTIVE, "active", False):
+        return _ORIG_CREATE_CONNECTION(address, *args, **kwargs)
+
     if isinstance(address, (list, tuple)) and len(address) >= 2:
         host, port = address[0], address[1]
         if isinstance(port, int) and port in _DISALLOWED_PORTS:
@@ -516,8 +531,9 @@ class MediaDownloader:
         if self.ffmpeg_exe and os.path.exists(self.ffmpeg_exe):
             opts["ffmpeg_location"] = os.path.dirname(self.ffmpeg_exe)
         try:
-            with yt_dlp.YoutubeDL(opts) as ydl:
-                info = ydl.extract_info(url, download=False)
+            with ssrf_socket_guard():
+                with yt_dlp.YoutubeDL(opts) as ydl:
+                    info = ydl.extract_info(url, download=False)
                 if not info:
                     raise MediaDownloaderError("No media information could be extracted from this URL.")
                 if "entries" in info:
@@ -727,8 +743,9 @@ class MediaDownloader:
         ydl_opts["progress_hooks"] = [hook]
 
         try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=True)
+            with ssrf_socket_guard():
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    info = ydl.extract_info(url, download=True)
                 if not info:
                     raise MediaDownloaderError("Failed to extract media.")
 
