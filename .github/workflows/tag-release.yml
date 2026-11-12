@@ -50,22 +50,22 @@ jobs:
             
             # Parse runs strictly matching TARGET_SHA
             run_match="$(echo "$runs_json" | python3 -c '
-import sys, json
-try:
-    data = json.load(sys.stdin)
-    target = "'"$TARGET_SHA"'"
-    matches = [r for r in data if str(r.get("headSha", "")).startswith(target[:7])]
-    if matches:
-        m = matches[0]
-        status = m.get("status") or "unknown"
-        conclusion = m.get("conclusion") or ""
-        sha = m.get("headSha") or ""
-        print(f"{status}|{conclusion}|{sha}")
-    else:
-        print("waiting||")
-except Exception as e:
-    print(f"error|{e}|")
-' 2>/dev/null || echo 'error|parse_failure|')"
+              import json, os, sys
+              try:
+                  data = json.load(sys.stdin)
+                  target = os.environ.get("TARGET_SHA", "")
+                  matches = [r for r in data if str(r.get("headSha", "")).startswith(target[:7])]
+                  if matches:
+                      m = matches[0]
+                      status = m.get("status") or "unknown"
+                      conclusion = m.get("conclusion") or ""
+                      sha = m.get("headSha") or ""
+                      print(f"{status}|{conclusion}|{sha}")
+                  else:
+                      print("waiting||")
+              except Exception as e:
+                  print(f"error|{e}|")
+              ' 2>/dev/null || echo 'error|parse_failure|')"
 
             IFS='|' read -r status conclusion run_sha <<< "$run_match"
 
