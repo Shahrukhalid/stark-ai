@@ -357,6 +357,7 @@ async def test_video_studio_automatic_two_pass_loudnorm(ffmpeg_bin: str, ffprobe
 
     # Validate measured loudness attached to job
     assert "measured_loudness" in cur_job, "measured_loudness was not recorded on completed job"
+    assert cur_job.get("audio_normalization") == "two_pass", f"Expected two_pass, got {cur_job.get('audio_normalization')}"
     metrics = cur_job["measured_loudness"]
     lufs = metrics["integrated_lufs"]
     tp = metrics["true_peak_db"]
@@ -365,5 +366,100 @@ async def test_video_studio_automatic_two_pass_loudnorm(ffmpeg_bin: str, ffprobe
 
     # Verify decoding integrity
     verify_decoding_integrity(ffmpeg_bin, out_file)
+
+
+@pytest.mark.asyncio
+async def test_video_studio_merge_two_pass_loudnorm(ffmpeg_bin: str, ffprobe_bin: str, sample_video: Path, tmp_path: Path):
+    """Verifies that multi-video merge workflows execute two-pass loudness normalization across joined streams."""
+    import asyncio
+    import shutil
+    import time
+    from stark.config import Settings
+    from stark.video import VideoStudio
+
+    data_dir = tmp_path / "merge_studio_data"
+    media_dir = data_dir / "media" / "video"
+    media_dir.mkdir(parents=True, exist_ok=True)
+    v1 = media_dir / "clip_1.mp4"
+    v2 = media_dir / "clip_2.mp4"
+    shutil.copy(sample_video, v1)
+    shutil.copy(sample_video, v2)
+
+    settings = Settings(data_dir=data_dir, workspace_roots=[data_dir])
+    studio = VideoStudio(settings)
+
+    opts = {
+        "files": [v1.name, v2.name],
+        "preset": "landscape",
+        "format": "mp4",
+        "normalize_audio": True,
+        "transition": 0.0,
+    }
+    job = studio.start(opts)
+    job_id = job["id"]
+
+    deadline = time.monotonic() + 30.0
+    while time.monotonic() < deadline:
+        cur_job = studio.jobs.get(job_id)
+        if cur_job and cur_job.get("status") in ("done", "failed", "cancelled"):
+            break
+        await asyncio.sleep(0.2)
+
+    cur_job = studio.jobs[job_id]
+    assert cur_job["status"] == "done", f"Merge failed: {cur_job.get('error')}"
+    out_file = media_dir / cur_job["output"]
+    assert out_file.is_file() and out_file.stat().st_size > 0
+
+    assert cur_job.get("audio_normalization") == "two_pass", f"Expected two_pass, got {cur_job.get('audio_normalization')}"
+    assert "measured_loudness" in cur_job
+    metrics = cur_job["measured_loudness"]
+    lufs = metrics["integrated_lufs"]
+    assert -16.0 <= lufs <= -12.0, f"Merged 2-pass loudness {lufs} LUFS is out of spec"
+    verify_decoding_integrity(ffmpeg_bin, out_file)
+
+
+@pytest.mark.asyncio
+async def test_video_studio_audio_normalization_fallbacks(ffmpeg_bin: str, tmp_path: Path):
+    """Verifies that videos without audio skip normalization cleanly, and strict two-pass fails with explicit status."""
+    import asyncio
+    import time
+    from stark.config import Settings
+    from stark.video import VideoStudio
+
+    data_dir = tmp_path / "fallback_studio_data"
+    media_dir = data_dir / "media" / "video"
+    media_dir.mkdir(parents=True, exist_ok=True)
+
+    # Generate video without audio
+    silent_vid = media_dir / "silent.mp4"
+    cmd = [
+        ffmpeg_bin, "-y", "-f", "lavfi", "-i", "testsrc=duration=1:size=320x240:rate=24",
+        "-c:v", "libx264", "-preset", "ultrafast", "-an", "-pix_fmt", "yuv420p", str(silent_vid),
+    ]
+    subprocess.run(cmd, check=True, capture_output=True)
+
+    settings = Settings(data_dir=data_dir, workspace_roots=[data_dir])
+    studio = VideoStudio(settings)
+
+    opts = {
+        "file": silent_vid.name,
+        "preset": "landscape",
+        "format": "mp4",
+        "normalize_audio": True,
+    }
+    job = studio.start(opts)
+    job_id = job["id"]
+
+    deadline = time.monotonic() + 30.0
+    while time.monotonic() < deadline:
+        cur_job = studio.jobs.get(job_id)
+        if cur_job and cur_job.get("status") in ("done", "failed", "cancelled"):
+            break
+        await asyncio.sleep(0.2)
+
+    cur_job = studio.jobs[job_id]
+    assert cur_job["status"] == "done"
+    assert cur_job.get("audio_normalization") == "skipped_no_audio"
+
 
 

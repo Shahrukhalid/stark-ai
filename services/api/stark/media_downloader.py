@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any, Callable
 import urllib.error
 import urllib.request
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
 
 logger = logging.getLogger("stark.media_downloader")
 
@@ -181,23 +181,105 @@ def _parse_alternate_ip(host_str: str) -> ipaddress.IPv4Address | ipaddress.IPv6
     return None
 
 
+_SENSITIVE_PARAM_NAMES = {
+    "access_token", "token", "auth", "api_key", "apikey", "key", "secret",
+    "client_secret", "signature", "sig", "session", "session_id", "password",
+    "pwd", "pass", "bearer", "auth_token", "refresh_token", "id_token",
+    "private_key", "code"
+}
+
+_PARAM_REGEX = re.compile(
+    r"(?P<prefix>(?:[?&#;]|&amp;))(?:(?P<name>"
+    + "|".join(re.escape(k) for k in _SENSITIVE_PARAM_NAMES)
+    + r")=(?P<val>[^&#\s\"'>]+))",
+    re.IGNORECASE,
+)
+
+_HEADER_REGEXES = [
+    (re.compile(r"(?i)\b(Authorization\s*:\s*Bearer\s+)[^\r\n,;]+"), r"\1[REDACTED]"),
+    (re.compile(r"(?i)\b(Authorization\s*:\s*Basic\s+)[^\r\n,;]+"), r"\1[REDACTED]"),
+    (re.compile(r"(?i)\b(Proxy-Authorization\s*:\s*Basic\s+)[^\r\n,;]+"), r"\1[REDACTED]"),
+    (re.compile(r"(?i)\b(Proxy-Authorization\s*:\s*)[^\r\n,;]+"), r"\1[REDACTED]"),
+    (re.compile(r"(?i)\b((?:Set-)?Cookie\s*:\s*)[^\r\n]+"), r"\1[REDACTED]"),
+    (re.compile(r"(?i)\b(X-(?:Api-Key|Auth-Token|Consumer-Secret)\s*:\s*)[^\r\n,;]+"), r"\1[REDACTED]"),
+    (re.compile(r"(?i)\b(Bearer\s+)[A-Za-z0-9\-_.~+/=]{16,}"), r"\1[REDACTED]"),
+    (re.compile(r"\b(gh[opurs]_[A-Za-z0-9_]{16,})\b"), "[REDACTED]"),
+    (re.compile(r"\b(sk-[A-Za-z0-9]{16,})\b"), "[REDACTED]"),
+    (re.compile(r"\b(AIza[0-9A-Za-z-_]{35})\b"), "[REDACTED]"),
+    (re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b"), "[REDACTED_JWT]"),
+    (re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]+?-----END [A-Z ]*PRIVATE KEY-----"), "[REDACTED_KEY]"),
+]
+
+
 def redact_url_credentials(url: str | Any) -> str:
-    """Strips usernames, passwords, and tokens from a URL or string containing URLs for safe error messages, logs, and job state."""
-    if not url:
+    """Strips usernames, passwords, auth tokens, sensitive query parameters, fragments,
+    and HTTP headers from URLs, error messages, exception strings, and multiline logs.
+    """
+    if url is None:
         return ""
+    if isinstance(url, (list, tuple)):
+        return ", ".join(redact_url_credentials(x) for x in url)
+    if isinstance(url, dict):
+        cleaned = {}
+        for k, v in url.items():
+            if str(k).lower() in _SENSITIVE_PARAM_NAMES or "pass" in str(k).lower() or "secret" in str(k).lower():
+                cleaned[k] = "[REDACTED]"
+            else:
+                cleaned[k] = redact_url_credentials(v)
+        return str(cleaned)
+
     text = str(url)
-    try:
-        if "://" in text and not any(c in text for c in ("\n", "\r", " ")):
+    if not text:
+        return ""
+
+    # 1. Clean cleanly formed URLs using urlsplit
+    if "://" in text and not any(c in text for c in ("\n", "\r", " ")) and text.count("://") == 1:
+        try:
             parsed = urlsplit(text)
-            if parsed.username or parsed.password:
-                host_part = parsed.hostname or ""
-                if parsed.port:
-                    host_part = f"{host_part}:{parsed.port}"
-                return urlunsplit((parsed.scheme, host_part, parsed.path, parsed.query, parsed.fragment))
-    except Exception:
-        pass
-    # Regex replacement for any user:password@ or token@ embedded in text/error messages
-    return re.sub(r"://[^/\s]+@", "://", text)
+            host_part = parsed.hostname or ""
+            if parsed.port:
+                host_part = f"{host_part}:{parsed.port}"
+
+            query = parsed.query
+            if query:
+                q_pairs = parse_qsl(query, keep_blank_values=True)
+                sanitized_pairs = []
+                for k, v in q_pairs:
+                    if k.lower() in _SENSITIVE_PARAM_NAMES:
+                        sanitized_pairs.append((k, "[REDACTED]"))
+                    else:
+                        sanitized_pairs.append((k, v))
+                query = urlencode(sanitized_pairs)
+
+            fragment = parsed.fragment
+            if fragment and any(k in fragment.lower() for k in ("token", "secret", "auth", "sig")):
+                f_pairs = parse_qsl(fragment, keep_blank_values=True)
+                if f_pairs:
+                    sanitized_f = []
+                    for k, v in f_pairs:
+                        if k.lower() in _SENSITIVE_PARAM_NAMES:
+                            sanitized_f.append((k, "[REDACTED]"))
+                        else:
+                            sanitized_f.append((k, v))
+                    fragment = urlencode(sanitized_f)
+                else:
+                    fragment = "[REDACTED]"
+
+            text = urlunsplit((parsed.scheme, host_part, parsed.path, query, fragment))
+        except Exception:
+            pass
+
+    # 2. General URL credential scrubbing via regex (handles multiline errors and malformed URLs)
+    text = re.sub(r"://[^/\s]+@", "://", text)
+
+    # 3. Sensitive query parameters in embedded URLs / error messages
+    text = _PARAM_REGEX.sub(r"\g<prefix>\g<name>=[REDACTED]", text)
+
+    # 4. Sensitive headers, tokens, and keys in text or logs
+    for pattern, repl in _HEADER_REGEXES:
+        text = pattern.sub(repl, text)
+
+    return text
 
 
 def validate_proxy_settings(opts: dict[str, Any] | None = None) -> None:

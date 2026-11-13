@@ -590,3 +590,53 @@ def test_proxy_credential_redaction(monkeypatch):
     assert "env_user" not in msg
     assert "169.254.169.254" in msg
 
+    # 4. Sensitive query parameters
+    query_url = "https://cdn.example.com/video.mp4?access_token=ya29.secret_token&user=john&api_key=sk-12345&sig=abcde99"
+    redacted_query = redact_url_credentials(query_url)
+    assert "ya29.secret_token" not in redacted_query
+    assert "sk-12345" not in redacted_query
+    assert "abcde99" not in redacted_query
+    assert "access_token=[REDACTED]" in redacted_query
+    assert "api_key=[REDACTED]" in redacted_query
+    assert "sig=[REDACTED]" in redacted_query
+    assert "user=john" in redacted_query
+
+    # 5. Sensitive OAuth fragments
+    frag_url = "https://auth.example.com/oauth/callback#access_token=topsecret_oauth_token&token_type=bearer"
+    redacted_frag = redact_url_credentials(frag_url)
+    assert "topsecret_oauth_token" not in redacted_frag
+    assert "[REDACTED]" in redacted_frag
+    assert "token_type=bearer" in redacted_frag
+
+    # 6. HTTP Headers and Authorization in exception backtraces
+    multiline_trace = (
+        "Traceback (most recent call last):\n"
+        "  File 'network.py', line 42, in request\n"
+        "Authorization: Bearer secret_bearer_token_9999\n"
+        "Cookie: session_id=session_token_xyz888; auth=user_cookie_data\n"
+        "X-Api-Key: sk-secret_api_key_7777\n"
+        "URLError: <urlopen error for 'http://svc_admin:P%40ssw0rd!@10.0.1.5:8080/data?key=secret_key_111'>\n"
+    )
+    redacted_trace = redact_url_credentials(multiline_trace)
+    assert "secret_bearer_token_9999" not in redacted_trace
+    assert "session_token_xyz888" not in redacted_trace
+    assert "sk-secret_api_key_7777" not in redacted_trace
+    assert "P%40ssw0rd!" not in redacted_trace
+    assert "svc_admin" not in redacted_trace
+    assert "secret_key_111" not in redacted_trace
+    assert "Authorization: Bearer [REDACTED]" in redacted_trace
+    assert "Cookie: [REDACTED]" in redacted_trace
+    assert "key=[REDACTED]" in redacted_trace
+
+    # 7. Dictionary and collections handling
+    data_dict = {
+        "url": "http://user:pass@example.com/video.mp4",
+        "api_key": "raw_secret_key",
+        "nested": {"token": "my_auth_token", "normal": "safe_value"},
+    }
+    redacted_dict_str = redact_url_credentials(data_dict)
+    assert "pass" not in redacted_dict_str
+    assert "raw_secret_key" not in redacted_dict_str
+    assert "my_auth_token" not in redacted_dict_str
+    assert "safe_value" in redacted_dict_str
+
