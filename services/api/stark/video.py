@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import re
 import shutil
@@ -19,6 +20,8 @@ import time
 import uuid
 from pathlib import Path
 from typing import Any, Callable
+
+logger = logging.getLogger("stark.video")
 
 from .power import keep_awake
 
@@ -181,6 +184,41 @@ def probe(exe: str, path: Path) -> dict[str, Any]:
     secs = int(m.group(1)) * 3600 + int(m.group(2)) * 60 + float(m.group(3))
     return {"duration": round(secs, 2), "width": int(size.group(1)), "height": int(size.group(2)),
             "audio": "Audio:" in r.stderr}
+
+
+def measure_audio_loudness(
+    exe: str,
+    path: Path | str,
+    start: float = 0.0,
+    end: float | None = None,
+) -> dict[str, Any]:
+    """Executes FFmpeg EBU R128 loudness measurement pass and parses the JSON metrics.
+    Disables video decoding (-vn) to execute as a high-speed audio-only probe.
+    """
+    cmd = [exe, "-hide_banner", "-nostats", "-ss", f"{start:.3f}"]
+    if end is not None and end > start:
+        cmd += ["-to", f"{end:.3f}"]
+    cmd += [
+        "-i", str(path),
+        "-vn",
+        "-af", "loudnorm=I=-14:LRA=11:TP=-1.5:print_format=json",
+        "-f", "null",
+        "-",
+    ]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=60, check=False)
+        if r.returncode != 0:
+            logger.warning(f"Audio loudness measurement returned code {r.returncode}: {r.stderr}")
+            return {}
+        stderr = r.stderr
+        start_idx = stderr.rfind("{")
+        end_idx = stderr.rfind("}")
+        if start_idx == -1 or end_idx == -1:
+            return {}
+        return json.loads(stderr[start_idx:end_idx + 1])
+    except Exception as exc:
+        logger.warning(f"Failed to measure audio loudness: {exc}")
+        return {}
 
 
 # ------------------------------------------------------------------ captions
@@ -707,6 +745,9 @@ class Studio:
             cmd, total = build_merge_command(exe, srcs, infos, out, opts)
             job = self._new_job("merge", file=", ".join(s.name for s in srcs), output=out.name,
                                 preset=opts["preset"], format=opts["format"], duration=total)
+            asyncio.get_running_loop().create_task(
+                self._run(job, cmd, out, opts=opts, exe=exe)
+            )
         else:
             src = _find(self.settings, str(opts.get("file") or (files[0] if files else "")))
             if src.suffix.lower() not in VIDEO_TYPES:
@@ -722,15 +763,58 @@ class Studio:
             total = (min(end, start + PRESETS[opts["preset"]]["max_s"] * _speed(opts)) - start) / _speed(opts)
             job = self._new_job("export", file=src.name, output=out.name, captions=srt.name if srt else None,
                                 preset=opts["preset"], format=opts["format"], duration=total)
-        asyncio.get_running_loop().create_task(self._run(job, cmd, out))
+            asyncio.get_running_loop().create_task(
+                self._run(
+                    job, cmd, out, opts=opts, exe=exe, src=src, info=info,
+                    srt_name=srt.name if srt and opts["captions"] != "file" else None,
+                    start=start, end=end
+                )
+            )
         return job
 
-    async def _run(self, job: dict[str, Any], cmd: list[str], out: Path) -> None:
+    async def _run(
+        self,
+        job: dict[str, Any],
+        cmd: list[str],
+        out: Path,
+        opts: dict[str, Any] | None = None,
+        exe: str | None = None,
+        src: Path | None = None,
+        info: dict[str, Any] | None = None,
+        srt_name: str | None = None,
+        start: float = 0.0,
+        end: float = 0.0,
+    ) -> None:
         async with self._lock:
             if job["status"] == "cancelled":
                 return
             job["status"] = "running"
             with keep_awake():
+                # Automatic two-pass audio normalization if requested and loudnorm_params not already provided
+                if (
+                    opts
+                    and opts.get("normalize_audio")
+                    and not opts.get("loudnorm_params")
+                    and exe
+                    and src
+                    and info
+                    and info.get("audio")
+                ):
+                    try:
+                        pass1 = await asyncio.to_thread(measure_audio_loudness, exe, src, start, end)
+                        if pass1 and "input_i" in pass1:
+                            opts_2p = dict(opts)
+                            opts_2p["loudnorm_params"] = {
+                                "input_i": str(pass1.get("input_i", "-14")),
+                                "input_lra": str(pass1.get("input_lra", "11")),
+                                "input_tp": str(pass1.get("input_tp", "-1.5")),
+                                "input_thresh": str(pass1.get("input_thresh", "-24")),
+                                "target_offset": str(pass1.get("target_offset", "0.0")),
+                            }
+                            cmd = build_command(exe, src, out, info, opts_2p, srt_name)
+                    except Exception as exc:
+                        logger.warning(f"Automatic two-pass loudnorm pass 1 failed, falling back to single-pass: {exc}")
+
                 tmp = out.with_name(out.name + ".part" + out.suffix)  # FFmpeg needs the real extension at the end
                 cmd = cmd[:-1] + [tmp.name]
                 proc = await asyncio.create_subprocess_exec(*cmd, cwd=str(out.parent), stdout=asyncio.subprocess.PIPE,
@@ -761,6 +845,17 @@ class Studio:
                     tmp.unlink(missing_ok=True)
                 elif job["status"] != "failed" and proc.returncode == 0 and tmp.is_file():
                     os.replace(tmp, out)
+                    if opts and opts.get("normalize_audio") and exe:
+                        try:
+                            measured = await asyncio.to_thread(measure_audio_loudness, exe, out)
+                            if measured and "input_i" in measured:
+                                job["measured_loudness"] = {
+                                    "integrated_lufs": float(measured["input_i"]),
+                                    "true_peak_db": float(measured.get("input_tp", -1.5)),
+                                    "lra": float(measured.get("input_lra", 11.0)),
+                                }
+                        except Exception as exc:
+                            logger.warning(f"Post-export loudness validation skipped: {exc}")
                     job.update(status="done", progress=1.0, bytes=out.stat().st_size)
                 else:
                     tmp.unlink(missing_ok=True)
@@ -923,6 +1018,9 @@ class Studio:
 
     def import_srt(self, name: str, content: str) -> str:
         return import_srt(self.settings, name, content)
+
+
+VideoStudio = Studio  # Convenient alias for studio service
 
 
 def export_srt(settings, name: str) -> str:

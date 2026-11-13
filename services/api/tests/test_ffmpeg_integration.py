@@ -314,3 +314,56 @@ def test_real_ffmpeg_subtitles_captions(ffmpeg_bin: str, ffprobe_bin: str, sampl
     assert sub_stream["codec_name"] in ("mov_text", "subrip", "text")
     verify_decoding_integrity(ffmpeg_bin, out_soft)
 
+
+@pytest.mark.asyncio
+async def test_video_studio_automatic_two_pass_loudnorm(ffmpeg_bin: str, ffprobe_bin: str, sample_video: Path, tmp_path: Path):
+    """Verifies that selecting normalize_audio in VideoStudio automatically conducts a two-pass loudnorm analysis and validates output loudness."""
+    import asyncio
+    import shutil
+    import time
+    from stark.config import Settings
+    from stark.video import VideoStudio
+
+    data_dir = tmp_path / "studio_data"
+    media_dir = data_dir / "media" / "video"
+    media_dir.mkdir(parents=True, exist_ok=True)
+    in_video = media_dir / "input_clip.mp4"
+    shutil.copy(sample_video, in_video)
+
+    settings = Settings(data_dir=data_dir, workspace_roots=[data_dir])
+    studio = VideoStudio(settings)
+
+    opts = {
+        "file": in_video.name,
+        "preset": "landscape",
+        "format": "mp4",
+        "normalize_audio": True,
+    }
+    job = studio.start(opts)
+    job_id = job["id"]
+
+    # Wait for background job to finish
+    deadline = time.monotonic() + 30.0
+    while time.monotonic() < deadline:
+        cur_job = studio.jobs.get(job_id)
+        if cur_job and cur_job.get("status") in ("done", "failed", "cancelled"):
+            break
+        await asyncio.sleep(0.2)
+
+    cur_job = studio.jobs[job_id]
+    assert cur_job["status"] == "done", f"Video export failed: {cur_job.get('error')}"
+    out_file = media_dir / cur_job["output"]
+    assert out_file.is_file() and out_file.stat().st_size > 0
+
+    # Validate measured loudness attached to job
+    assert "measured_loudness" in cur_job, "measured_loudness was not recorded on completed job"
+    metrics = cur_job["measured_loudness"]
+    lufs = metrics["integrated_lufs"]
+    tp = metrics["true_peak_db"]
+    assert -16.0 <= lufs <= -12.0, f"Automatic 2-pass loudness {lufs} LUFS is out of spec"
+    assert tp <= -1.0, f"True peak {tp} dB exceeds ceiling"
+
+    # Verify decoding integrity
+    verify_decoding_integrity(ffmpeg_bin, out_file)
+
+
