@@ -221,6 +221,49 @@ def measure_audio_loudness(
         return {}
 
 
+def measure_merge_audio_loudness(
+    exe: str,
+    srcs: list[Path],
+    infos: list[dict[str, Any]],
+    fade: float = 0.0,
+    transition_type: str = "fade",
+) -> dict[str, Any]:
+    """Executes FFmpeg Pass 1 EBU R128 loudness measurement across merged audio streams."""
+    if not srcs or not all(i.get("audio") for i in infos):
+        return {}
+    parts = [f"[{i}:a]aresample=48000,aformat=channel_layouts=stereo[a{i}]" for i in range(len(srcs))]
+    if fade:
+        aprev = "[a0]"
+        for i in range(1, len(srcs)):
+            parts.append(f"{aprev}[a{i}]acrossfade=d={fade:.2f}[y{i}]")
+            aprev = f"[y{i}]"
+        aout = aprev
+    else:
+        ins = "".join(f"[a{i}]" for i in range(len(srcs)))
+        parts.append(f"{ins}concat=n={len(srcs)}:v=0:a=1[ac]")
+        aout = "[ac]"
+    parts.append(f"{aout}loudnorm=I=-14:LRA=11:TP=-1.5:print_format=json[outa]")
+
+    cmd = [exe, "-hide_banner", "-nostats"]
+    for s in srcs:
+        cmd += ["-i", str(s)]
+    cmd += ["-filter_complex", ";".join(parts), "-map", "[outa]", "-f", "null", "-"]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=120, check=False)
+        if r.returncode != 0:
+            logger.warning(f"Merge audio loudness measurement returned code {r.returncode}: {r.stderr[-300:]}")
+            return {}
+        stderr = r.stderr
+        start_idx = stderr.rfind("{")
+        end_idx = stderr.rfind("}")
+        if start_idx == -1 or end_idx == -1:
+            return {}
+        return json.loads(stderr[start_idx:end_idx + 1])
+    except Exception as exc:
+        logger.warning(f"Failed to measure merge audio loudness: {exc}")
+        return {}
+
+
 # ------------------------------------------------------------------ captions
 def _ts(t: float) -> str:
     ms = int(round(max(0.0, t) * 1000))
@@ -583,6 +626,20 @@ def build_merge_command(exe: str, srcs: list[Path], infos: list[dict[str, Any]],
         ins = "".join(f"[v{i}]" + (f"[a{i}]" if audio else "") for i in range(len(srcs)))
         parts.append(f"{ins}concat=n={len(srcs)}:v=1:a={1 if audio else 0}[vc]" + ("[ac]" if audio else ""))
         vout, aout = "[vc]", "[ac]"
+    if audio and opts.get("normalize_audio"):
+        ln = opts.get("loudnorm_params")
+        if ln and "input_i" in ln:
+            parts.append(
+                f"{aout}loudnorm=I=-14:LRA=11:TP=-1.5:"
+                f"measured_I={ln['input_i']}:"
+                f"measured_LRA={ln['input_lra']}:"
+                f"measured_TP={ln['input_tp']}:"
+                f"measured_thresh={ln['input_thresh']}:"
+                f"offset={ln['target_offset']}:linear=true[anorm]"
+            )
+        else:
+            parts.append(f"{aout}loudnorm=I=-14:LRA=11:TP=-1.5[anorm]")
+        aout = "[anorm]"
     if opts["format"] == "gif":
         parts.append(f"{vout}fps=12,scale='min(720,iw)':-2:flags=lanczos[vg]")
         vout = "[vg]"
@@ -746,7 +803,7 @@ class Studio:
             job = self._new_job("merge", file=", ".join(s.name for s in srcs), output=out.name,
                                 preset=opts["preset"], format=opts["format"], duration=total)
             asyncio.get_running_loop().create_task(
-                self._run(job, cmd, out, opts=opts, exe=exe)
+                self._run(job, cmd, out, opts=opts, exe=exe, srcs=srcs, infos=infos)
             )
         else:
             src = _find(self.settings, str(opts.get("file") or (files[0] if files else "")))
@@ -781,6 +838,8 @@ class Studio:
         exe: str | None = None,
         src: Path | None = None,
         info: dict[str, Any] | None = None,
+        srcs: list[Path] | None = None,
+        infos: list[dict[str, Any]] | None = None,
         srt_name: str | None = None,
         start: float = 0.0,
         end: float = 0.0,
@@ -790,30 +849,64 @@ class Studio:
                 return
             job["status"] = "running"
             with keep_awake():
-                # Automatic two-pass audio normalization if requested and loudnorm_params not already provided
-                if (
-                    opts
-                    and opts.get("normalize_audio")
-                    and not opts.get("loudnorm_params")
-                    and exe
-                    and src
-                    and info
-                    and info.get("audio")
-                ):
-                    try:
-                        pass1 = await asyncio.to_thread(measure_audio_loudness, exe, src, start, end)
-                        if pass1 and "input_i" in pass1:
-                            opts_2p = dict(opts)
-                            opts_2p["loudnorm_params"] = {
-                                "input_i": str(pass1.get("input_i", "-14")),
-                                "input_lra": str(pass1.get("input_lra", "11")),
-                                "input_tp": str(pass1.get("input_tp", "-1.5")),
-                                "input_thresh": str(pass1.get("input_thresh", "-24")),
-                                "target_offset": str(pass1.get("target_offset", "0.0")),
-                            }
-                            cmd = build_command(exe, src, out, info, opts_2p, srt_name)
-                    except Exception as exc:
-                        logger.warning(f"Automatic two-pass loudnorm pass 1 failed, falling back to single-pass: {exc}")
+                # Automatic two-pass audio normalization if requested
+                if opts and opts.get("normalize_audio") and exe:
+                    has_audio = (info and info.get("audio")) or (infos and any(i.get("audio") for i in infos))
+                    if not has_audio:
+                        job["audio_normalization"] = "skipped_no_audio"
+                    elif not opts.get("loudnorm_params"):
+                        try:
+                            if srcs and infos:
+                                # Multi-video merge Pass 1 probe
+                                fade = min(1.5, max(0.0, float(opts.get("transition") or 0)))
+                                kind = opts.get("transition_type") if opts.get("transition_type") in TRANSITIONS else "fade"
+                                pass1 = await asyncio.to_thread(measure_merge_audio_loudness, exe, srcs, infos, fade, kind)
+                                if pass1 and "input_i" in pass1:
+                                    opts_2p = dict(opts)
+                                    opts_2p["loudnorm_params"] = {
+                                        "input_i": str(pass1.get("input_i", "-14")),
+                                        "input_lra": str(pass1.get("input_lra", "11")),
+                                        "input_tp": str(pass1.get("input_tp", "-1.5")),
+                                        "input_thresh": str(pass1.get("input_thresh", "-24")),
+                                        "target_offset": str(pass1.get("target_offset", "0.0")),
+                                    }
+                                    cmd, _ = build_merge_command(exe, srcs, infos, out, opts_2p)
+                                    job["audio_normalization"] = "two_pass"
+                                else:
+                                    if opts.get("strict_two_pass"):
+                                        job.update(status="failed", error="Two-pass audio normalization measurement failed for merge.")
+                                        return
+                                    job["audio_normalization"] = "single_pass_fallback"
+                                    job["audio_normalization_warning"] = "Two-pass measurement failed to compute parameters; applied single-pass normalization."
+                            elif src and info:
+                                # Single video Pass 1 probe
+                                pass1 = await asyncio.to_thread(measure_audio_loudness, exe, src, start, end)
+                                if pass1 and "input_i" in pass1:
+                                    opts_2p = dict(opts)
+                                    opts_2p["loudnorm_params"] = {
+                                        "input_i": str(pass1.get("input_i", "-14")),
+                                        "input_lra": str(pass1.get("input_lra", "11")),
+                                        "input_tp": str(pass1.get("input_tp", "-1.5")),
+                                        "input_thresh": str(pass1.get("input_thresh", "-24")),
+                                        "target_offset": str(pass1.get("target_offset", "0.0")),
+                                    }
+                                    cmd = build_command(exe, src, out, info, opts_2p, srt_name)
+                                    job["audio_normalization"] = "two_pass"
+                                else:
+                                    if opts.get("strict_two_pass"):
+                                        job.update(status="failed", error="Two-pass audio normalization measurement failed.")
+                                        return
+                                    job["audio_normalization"] = "single_pass_fallback"
+                                    job["audio_normalization_warning"] = "Two-pass measurement failed to compute parameters; applied single-pass normalization."
+                        except Exception as exc:
+                            logger.warning(f"Automatic two-pass loudnorm failed: {exc}")
+                            if opts.get("strict_two_pass"):
+                                job.update(status="failed", error=f"Two-pass audio normalization failed: {exc}")
+                                return
+                            job["audio_normalization"] = "single_pass_fallback"
+                            job["audio_normalization_warning"] = f"Two-pass measurement error ({exc}); applied single-pass normalization."
+                    else:
+                        job["audio_normalization"] = "two_pass"
 
                 tmp = out.with_name(out.name + ".part" + out.suffix)  # FFmpeg needs the real extension at the end
                 cmd = cmd[:-1] + [tmp.name]
@@ -856,6 +949,17 @@ class Studio:
                                 }
                         except Exception as exc:
                             logger.warning(f"Post-export loudness validation skipped: {exc}")
+                    try:
+                        out_info = probe(exe, out)
+                        job["output_codecs"] = {
+                            "format": opts.get("format") if opts else out.suffix.lstrip("."),
+                            "has_audio": out_info.get("audio", False),
+                            "duration": out_info.get("duration", 0.0),
+                            "width": out_info.get("width", 0),
+                            "height": out_info.get("height", 0),
+                        }
+                    except Exception:
+                        pass
                     job.update(status="done", progress=1.0, bytes=out.stat().st_size)
                 else:
                     tmp.unlink(missing_ok=True)

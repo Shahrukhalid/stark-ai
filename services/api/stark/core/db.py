@@ -6,7 +6,7 @@ import json
 import uuid
 from contextlib import contextmanager
 from contextvars import ContextVar
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Any, Iterator
 
 from sqlalchemy import (
@@ -444,6 +444,16 @@ class ResearchItem(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class PlatformLock(Base):
+    """Database-backed transactional lock table for cross-instance coordination."""
+
+    __tablename__ = "platform_locks"
+    platform: Mapped[str] = mapped_column(String(32), primary_key=True)
+    locked_by: Mapped[str] = mapped_column(String(128))
+    acquired_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+
 class Setting(Base):
     __tablename__ = "settings"
     key: Mapped[str] = mapped_column(String(64), primary_key=True)
@@ -519,6 +529,64 @@ class Database:
                 row.value = json.dumps(value)
             else:
                 s.add(Setting(key=key, value=json.dumps(value)))
+
+    # --- transactional cross-instance locks ---
+    def acquire_platform_lock(
+        self,
+        platform: str,
+        locked_by: str,
+        timeout_s: float = 15.0,
+        ttl_s: float = 60.0,
+    ) -> bool:
+        """Atomically acquires a database-backed platform lock with an expiration TTL.
+        Fails closed if the lock cannot be acquired within timeout_s.
+        """
+        import time
+        from sqlalchemy import delete
+        from sqlalchemy.exc import IntegrityError, OperationalError
+
+        start = time.monotonic()
+        while True:
+            now = utcnow()
+            expires = now + timedelta(seconds=ttl_s)
+            try:
+                with self.session() as s:
+                    # Clean up expired locks for this platform
+                    s.execute(
+                        delete(PlatformLock).where(
+                            PlatformLock.platform == platform,
+                            PlatformLock.expires_at < now,
+                        )
+                    )
+                    # Attempt atomic insert
+                    lock_row = PlatformLock(
+                        platform=platform,
+                        locked_by=locked_by,
+                        acquired_at=now,
+                        expires_at=expires,
+                    )
+                    s.add(lock_row)
+                    s.flush()
+                return True
+            except (IntegrityError, OperationalError):
+                if time.monotonic() - start > timeout_s:
+                    return False
+                time.sleep(0.05)
+
+    def release_platform_lock(self, platform: str, locked_by: str) -> None:
+        """Releases a held database-backed platform lock."""
+        from sqlalchemy import delete
+
+        try:
+            with self.session() as s:
+                s.execute(
+                    delete(PlatformLock).where(
+                        PlatformLock.platform == platform,
+                        PlatformLock.locked_by == locked_by,
+                    )
+                )
+        except Exception:
+            pass
 
 
 def to_dict(row: Base) -> dict[str, Any]:

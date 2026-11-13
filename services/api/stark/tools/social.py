@@ -29,6 +29,7 @@ import sys
 import threading
 import unicodedata
 import time
+import uuid
 from datetime import datetime, timezone, timedelta
 from typing import Any, Callable, Literal
 
@@ -1505,46 +1506,65 @@ class SocialPublish(Tool):
                                   actor=ctx.actor)
 
 
-_PLATFORM_PUBLISH_LOCKS: dict[str, asyncio.Lock] = {}
+_PLATFORM_PUBLISH_LOCKS: dict[tuple[str, int], asyncio.Lock] = {}
 _PLATFORM_LOCK_MUTEX = threading.Lock()
 
 
 def _get_platform_publish_lock(platform: str) -> asyncio.Lock:
+    try:
+        loop = asyncio.get_running_loop()
+        loop_id = id(loop)
+    except RuntimeError:
+        loop_id = 0
+    key = (platform, loop_id)
     with _PLATFORM_LOCK_MUTEX:
-        if platform not in _PLATFORM_PUBLISH_LOCKS:
-            _PLATFORM_PUBLISH_LOCKS[platform] = asyncio.Lock()
-        return _PLATFORM_PUBLISH_LOCKS[platform]
+        if key not in _PLATFORM_PUBLISH_LOCKS:
+            _PLATFORM_PUBLISH_LOCKS[key] = asyncio.Lock()
+        return _PLATFORM_PUBLISH_LOCKS[key]
 
 
 def _resolve_lock_dir(settings=None, kernel=None) -> Path:
     """Resolves the canonical lock directory across processes, instances, and shared databases.
     Priority:
-    1. STARK_LOCK_DIR environment variable (canonical multi-instance coordination)
-    2. settings.data_dir / 'locks' (if settings.data_dir is configured)
+    1. STARK_LOCK_DIR environment variable (canonical multi-instance coordination override)
+    2. Explicit local settings.data_dir / 'locks' if it already exists
     3. Shared SQLite database directory (if file-backed SQLite database is configured)
-    4. Canonical fallback: Path(STARK_DATA / 'locks') or Path.home() / '.stark' / 'locks'
+    4. settings.data_dir / 'locks' (default data directory)
+    5. Canonical fallback: Path(STARK_DATA / 'locks') or Path.home() / '.stark' / 'locks'
     """
     env_dir = os.environ.get("STARK_LOCK_DIR")
     if env_dir:
-        return Path(env_dir)
+        return Path(env_dir).resolve()
 
+    # If the instance's data_dir already has an established locks path
     if settings and hasattr(settings, "data_dir") and settings.data_dir:
-        return Path(settings.data_dir) / "locks"
+        candidate = (Path(settings.data_dir) / "locks").resolve()
+        if candidate.exists():
+            return candidate
 
-    # If settings or kernel has a shared file-backed SQLite database
+    # If settings or kernel points to a shared file-backed SQLite database,
+    # the lock directory MUST reside next to that shared database so all instances
+    # sharing the database coordinate through the exact same lock directory.
     db_url = None
     if settings and getattr(settings, "database_url", None):
         db_url = str(settings.database_url)
-    elif kernel and hasattr(kernel, "db") and getattr(kernel.db, "url", None):
-        db_url = str(kernel.db.url)
+    elif kernel and hasattr(kernel, "db"):
+        if hasattr(kernel.db, "engine") and hasattr(kernel.db.engine, "url"):
+            db_url = str(kernel.db.engine.url)
+        elif getattr(kernel.db, "url", None):
+            db_url = str(kernel.db.url)
 
-    if db_url and db_url.startswith("sqlite:///") and not db_url.startswith("sqlite:///:memory:"):
-        db_path = Path(db_url.replace("sqlite:///", ""))
-        if db_path.parent.is_dir():
-            return db_path.parent / "locks"
+    if db_url and "sqlite" in db_url and ":memory:" not in db_url:
+        clean = db_url.split("sqlite:///")[-1]
+        if clean:
+            db_path = Path(clean).resolve()
+            return (db_path.parent / "locks").resolve()
+
+    if settings and hasattr(settings, "data_dir") and settings.data_dir:
+        return (Path(settings.data_dir) / "locks").resolve()
 
     base = os.environ.get("STARK_DATA") or os.environ.get("STARK_DESKTOP_DATA") or str(Path.home() / ".stark")
-    return Path(base) / "locks"
+    return (Path(base) / "locks").resolve()
 
 
 @contextmanager
@@ -1681,51 +1701,72 @@ async def publish_item(kernel, social: "Social", settings, item_id: str, *, appr
     lock = _get_platform_publish_lock(item["platform"])
     async with lock:
         lock_dir = _resolve_lock_dir(settings, kernel)
+        worker_id = f"{os.getpid()}_{id(asyncio.current_task())}_{uuid.uuid4().hex[:8]}"
         try:
             async with _async_interprocess_platform_lock(item["platform"], lock_dir=lock_dir):
-                # If publishing live via an external platform adapter, enforce safety policy and deduplication
-                if adapter is not None:
-                    publishing_policy.sync_cooldowns_from_db(kernel.db)
+                # Transactional database-level coordination across all instances sharing the database
+                db_locked = False
+                if kernel and hasattr(kernel, "db") and hasattr(kernel.db, "acquire_platform_lock"):
+                    db_locked = await asyncio.to_thread(
+                        kernel.db.acquire_platform_lock,
+                        item["platform"],
+                        worker_id,
+                        timeout_s=15.0,
+                        ttl_s=60.0,
+                    )
+                    if not db_locked:
+                        return ToolResult(
+                            False,
+                            f"Publishing blocked: database transactional lock could not be acquired for {item['platform']}",
+                            error="lock_failed",
+                        )
+                try:
+                    # If publishing live via an external platform adapter, enforce safety policy and deduplication
+                    if adapter is not None:
+                        publishing_policy.sync_cooldowns_from_db(kernel.db)
+                        with kernel.db.session() as s:
+                            since_24h = utcnow() - timedelta(days=1)
+                            recent_rows = s.execute(select(ContentItem.published_at, ContentItem.updated_at).where(
+                                ContentItem.platform == item["platform"],
+                                ContentItem.status.in_(["published", "publishing"]),
+                                ContentItem.simulated.is_(False),
+                                ContentItem.updated_at >= since_24h,
+                                ContentItem.id != item_id,
+                            )).all()
+                            recent_ts = [(r[0] or r[1] or utcnow()).timestamp() for r in recent_rows]
+
+                        elig = publishing_policy.check_eligibility(item["platform"], recent_ts)
+                        if not elig["eligible"]:
+                            return ToolResult(False, f"Publishing blocked by safety policy: {elig['reason']}", elig,
+                                              error="publishing_policy_violation")
+
+                        # Content deduplication check: avoid posting identical content to the same platform within 7 days
+                        curr_fp = publishing_policy.content_hash(item["text"])
+                        with kernel.db.session() as s:
+                            since_7d = utcnow() - timedelta(days=7)
+                            past_items = s.scalars(select(ContentItem.text).where(
+                                ContentItem.platform == item["platform"],
+                                ContentItem.status.in_(["published", "publishing"]),
+                                ContentItem.simulated.is_(False),
+                                ContentItem.updated_at >= since_7d,
+                                ContentItem.id != item_id,
+                            )).all()
+                            for past_text in past_items:
+                                if publishing_policy.content_hash(past_text) == curr_fp:
+                                    return ToolResult(False, "Duplicate post prevented: identical content was published to this platform within the last 7 days.",
+                                                      error="duplicate_post")
+
+                    # Claim the item atomically: a second publish of the same item, or an edit, can't run concurrently.
                     with kernel.db.session() as s:
-                        since_24h = utcnow() - timedelta(days=1)
-                        recent_rows = s.execute(select(ContentItem.published_at, ContentItem.updated_at).where(
-                            ContentItem.platform == item["platform"],
-                            ContentItem.status.in_(["published", "publishing"]),
-                            ContentItem.simulated.is_(False),
-                            ContentItem.updated_at >= since_24h,
-                            ContentItem.id != item_id,
-                        )).all()
-                        recent_ts = [(r[0] or r[1] or utcnow()).timestamp() for r in recent_rows]
-
-                    elig = publishing_policy.check_eligibility(item["platform"], recent_ts)
-                    if not elig["eligible"]:
-                        return ToolResult(False, f"Publishing blocked by safety policy: {elig['reason']}", elig,
-                                          error="publishing_policy_violation")
-
-                    # Content deduplication check: avoid posting identical content to the same platform within 7 days
-                    curr_fp = publishing_policy.content_hash(item["text"])
-                    with kernel.db.session() as s:
-                        since_7d = utcnow() - timedelta(days=7)
-                        past_items = s.scalars(select(ContentItem.text).where(
-                            ContentItem.platform == item["platform"],
-                            ContentItem.status.in_(["published", "publishing"]),
-                            ContentItem.simulated.is_(False),
-                            ContentItem.updated_at >= since_7d,
-                            ContentItem.id != item_id,
-                        )).all()
-                        for past_text in past_items:
-                            if publishing_policy.content_hash(past_text) == curr_fp:
-                                return ToolResult(False, "Duplicate post prevented: identical content was published to this platform within the last 7 days.",
-                                                  error="duplicate_post")
-
-                # Claim the item atomically: a second publish of the same item, or an edit, can't run concurrently.
-                with kernel.db.session() as s:
-                    claimed = s.execute(update(ContentItem).where(
-                        ContentItem.id == item_id, ContentItem.status == item["status"], ContentItem.paused.is_(False),
-                        ContentItem.text == item["text"]).values(status="publishing", updated_at=utcnow())).rowcount
-                if claimed != 1:
-                    return ToolResult(False, "Item changed or is already being published; nothing was sent",
-                                      error="not_publishable")
+                        claimed = s.execute(update(ContentItem).where(
+                            ContentItem.id == item_id, ContentItem.status == item["status"], ContentItem.paused.is_(False),
+                            ContentItem.text == item["text"]).values(status="publishing", updated_at=utcnow())).rowcount
+                    if claimed != 1:
+                        return ToolResult(False, "Item changed or is already being published; nothing was sent",
+                                          error="not_publishable")
+                finally:
+                    if db_locked and kernel and hasattr(kernel, "db") and hasattr(kernel.db, "release_platform_lock"):
+                        await asyncio.to_thread(kernel.db.release_platform_lock, item["platform"], worker_id)
         except (RuntimeError, TimeoutError, OSError) as exc:
             return ToolResult(False, f"Publishing blocked: lock failure for {item['platform']} ({exc})",
                               error="lock_failed")

@@ -249,3 +249,82 @@ async def test_crash_recovery_on_startup(tmp_path: Path):
         assert recovered_2.status == "failed"
         assert "interrupted by API restart while publishing" in (recovered_2.error or "")
         assert "retrying is safe" in (recovered_2.error or "")
+
+
+@pytest.mark.asyncio
+async def test_resolve_lock_dir_inherits_shared_db_without_env_var(tmp_path: Path, monkeypatch):
+    """Verifies that instances sharing a SQLite database automatically resolve the same lock directory
+    even when STARK_LOCK_DIR is NOT set and data_dir paths are completely separate.
+    """
+    monkeypatch.delenv("STARK_LOCK_DIR", raising=False)
+    shared_db = tmp_path / "shared" / "stark.db"
+    shared_db.parent.mkdir(parents=True, exist_ok=True)
+    dir_1 = tmp_path / "app_inst_1"
+    dir_2 = tmp_path / "app_inst_2"
+    dir_1.mkdir()
+    dir_2.mkdir()
+
+    k_1, s_1 = _make_file_db_kernel(shared_db, dir_1)
+    k_2, s_2 = _make_file_db_kernel(shared_db, dir_2)
+
+    lock_dir_1 = _resolve_lock_dir(s_1, k_1)
+    lock_dir_2 = _resolve_lock_dir(s_2, k_2)
+
+    expected = (shared_db.parent / "locks").resolve()
+    assert lock_dir_1 == expected
+    assert lock_dir_2 == expected
+    assert lock_dir_1 == lock_dir_2
+
+
+@pytest.mark.asyncio
+async def test_database_backed_platform_lock_coordination(tmp_path: Path):
+    """Verifies transactional database-backed PlatformLock mutual exclusion, TTL expiration, and release."""
+    db_path = tmp_path / "db_locks.db"
+    settings = Settings(data_dir=tmp_path, database_url=f"sqlite:///{db_path}")
+    db = Database(str(settings.database_url))
+    db.create_all()
+
+    # Worker 1 acquires lock
+    w1_ok = db.acquire_platform_lock("bluesky", "worker_1", timeout_s=1.0, ttl_s=2.0)
+    assert w1_ok is True
+
+    # Worker 2 attempts acquire with short timeout and must fail
+    w2_ok = db.acquire_platform_lock("bluesky", "worker_2", timeout_s=0.2, ttl_s=2.0)
+    assert w2_ok is False
+
+    # Worker 1 releases lock
+    db.release_platform_lock("bluesky", "worker_1")
+
+    # Worker 2 can now acquire
+    w2_ok = db.acquire_platform_lock("bluesky", "worker_2", timeout_s=1.0, ttl_s=2.0)
+    assert w2_ok is True
+
+    db.release_platform_lock("bluesky", "worker_2")
+
+
+@pytest.mark.asyncio
+async def test_publishing_blocked_when_lock_unacquirable(tmp_path: Path):
+    """Verifies that when a platform lock is held by another worker, publish_item immediately blocks with lock_failed."""
+    shared_db = tmp_path / "blocked_publish.db"
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    kernel, settings = _make_file_db_kernel(shared_db, data_dir)
+
+    draft = await _draft(kernel, platform="bluesky", text="Post that should be blocked by held lock")
+    item_id = draft["id"]
+
+    # Pre-acquire the platform lock in the database with a long TTL
+    kernel.db.acquire_platform_lock("bluesky", "blocking_holder", timeout_s=1.0, ttl_s=60.0)
+
+    transport = httpx.MockTransport(lambda req: httpx.Response(200, json={"uri": "at://..."}))
+    sc = Social(settings, transport)
+
+    # Attempt to publish must fail closed with lock_failed
+    res = await social_tools.publish_item(kernel, sc, settings, item_id, approved_fp=None, actor="user")
+    assert not res.ok
+    assert res.error == "lock_failed"
+    assert "lock" in res.summary.lower()
+
+    # Clean up held lock
+    kernel.db.release_platform_lock("bluesky", "blocking_holder")
+

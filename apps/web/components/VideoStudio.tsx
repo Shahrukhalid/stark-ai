@@ -7,7 +7,7 @@ import { Section } from "./ui";
 
 type VFile = { name: string; bytes: number; kind: "video" | "image" | "captions"; transcript?: boolean };
 type Pick = { title: string; hook: string; hashtags: string[]; video: string; thumbnail: string; start: number; end: number; drafts: { platform: string; id?: string; error?: string }[] };
-type Job = { clips?: Pick[]; picked_by?: string | null; id: string; kind: string; status: "queued" | "running" | "done" | "failed" | "cancelled"; progress: number; file: string; output: string | null; captions: string | null; error: string | null; preset?: string; format?: string; model?: string; measured_loudness?: { integrated_lufs: number; true_peak_db: number; lra?: number } };
+type Job = { clips?: Pick[]; picked_by?: string | null; id: string; kind: string; status: "queued" | "running" | "done" | "failed" | "cancelled"; progress: number; file: string; output: string | null; captions: string | null; error: string | null; preset?: string; format?: string; model?: string; measured_loudness?: { integrated_lufs: number; true_peak_db: number; lra?: number }; audio_normalization?: string; audio_normalization_warning?: string };
 type Model = { name: string; label: string; installed: boolean };
 type FF = { available: boolean; message?: string; version?: string; burn_captions?: boolean; transitions?: boolean; transcribe?: boolean };
 type Home = { ffmpeg: FF; files: VFile[]; jobs: Job[]; presets: Record<string, { label: string }>; formats: string[]; models: Model[] };
@@ -523,6 +523,8 @@ export function VideoStudio({ talkTo }: { talkTo: (agentId: string, text?: strin
                   <span className={j.status === "done" ? "text-emerald-300" : j.status === "failed" ? "text-red-300" : j.status === "cancelled" ? "text-[var(--color-mute)]" : "text-cyan-300"}>{KIND[j.kind] || j.kind} · {j.status}</span>
                   <span className="min-w-0 flex-1 truncate">{j.output || j.file}</span>
                   {j.measured_loudness && <span className="text-[11px] text-cyan-400" title={`True peak: ${j.measured_loudness.true_peak_db} dB`}>({j.measured_loudness.integrated_lufs} LUFS)</span>}
+                  {j.audio_normalization === "two_pass" && <span className="rounded bg-emerald-500/20 px-1 py-0.5 text-[10px] text-emerald-300 font-medium">2-Pass</span>}
+                  {j.audio_normalization === "single_pass_fallback" && <span className="rounded bg-amber-500/20 px-1 py-0.5 text-[10px] text-amber-300 font-medium" title={j.audio_normalization_warning || "Single-pass fallback"}>1-Pass Fallback</span>}
                   {(j.status === "running" || j.status === "queued") && <button className="btn !py-0.5" onClick={() => act("", () => client.del(`/api/video/jobs/${j.id}`))} aria-label="Cancel"><X size={11} /></button>}
                   {j.status === "done" && j.output && j.kind !== "model" && <button className="btn !py-0.5" onClick={() => download(j.output!)} aria-label={`Download ${j.output}`}><Download size={11} /></button>}
                 </div>
@@ -545,6 +547,7 @@ export function VideoStudio({ talkTo }: { talkTo: (agentId: string, text?: strin
                 ))}
                 {j.kind === "package" && j.picked_by && <p className="mt-1 text-[var(--color-mute)]">Moments picked {j.picked_by === "agent" ? "by U" : "by a rule (no AI model connected)"}.</p>}
                 {j.error && <p className="mt-1 break-anywhere text-red-300">{j.error}</p>}
+                {j.audio_normalization_warning && <p className="mt-1 text-xs text-amber-300">{j.audio_normalization_warning}</p>}
               </div>
             ))}
 
