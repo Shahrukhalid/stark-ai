@@ -191,35 +191,82 @@ def test_real_ffmpeg_image_watermarking(ffmpeg_bin: str, ffprobe_bin: str, sampl
 
 
 def test_real_ffmpeg_loudnorm_audio_processing(ffmpeg_bin: str, ffprobe_bin: str, sample_video: Path, tmp_path: Path):
-    """Executes real two-channel broadcast audio normalization and measures LUFS and true-peak levels."""
-    out = tmp_path / "audio_normalized.mp4"
+    """Executes real audio normalization, comparing baseline vs processed media, and distinguishing single-pass from genuine two-pass normalization."""
+    # 0. Measure baseline media audio loudness
+    baseline_metrics = measure_audio_loudness(ffmpeg_bin, sample_video)
+    base_i = float(baseline_metrics["input_i"])
+    base_tp = float(baseline_metrics["input_tp"])
+
+    # 1. Test Single-Pass dynamic normalization
+    out_single = tmp_path / "audio_single_pass.mp4"
     info = {"duration": 1.0, "width": 320, "height": 240, "audio": True}
-    opts = {
+    opts_single = {
         "preset": "landscape",
         "format": "mp4",
         "normalize_audio": True,
     }
-    cmd = video.build_command(ffmpeg_bin, sample_video, out, info, opts, None)
-    res = subprocess.run(cmd, cwd=sample_video.parent, capture_output=True, text=True, check=False)
-    assert res.returncode == 0, f"FFmpeg loudnorm failed: {res.stderr}"
-    assert out.is_file()
+    cmd_single = video.build_command(ffmpeg_bin, sample_video, out_single, info, opts_single, None)
+    res_single = subprocess.run(cmd_single, cwd=sample_video.parent, capture_output=True, text=True, check=False)
+    assert res_single.returncode == 0, f"Single-pass FFmpeg loudnorm failed: {res_single.stderr}"
+    assert out_single.is_file()
 
-    # 1. Verify audio stream properties
-    probe = probe_media(ffprobe_bin, out)
-    a_stream = next(s for s in probe["streams"] if s["codec_type"] == "audio")
-    assert a_stream["codec_name"] == "aac"
+    probe_single = probe_media(ffprobe_bin, out_single)
+    a_single = next(s for s in probe_single["streams"] if s["codec_type"] == "audio")
+    assert a_single["codec_name"] == "aac"
 
-    # 2. Verify integrated loudness (LUFS) and true peak metrics
-    metrics = measure_audio_loudness(ffmpeg_bin, out)
-    input_i = float(metrics["input_i"])
-    input_tp = float(metrics["input_tp"])
+    single_metrics = measure_audio_loudness(ffmpeg_bin, out_single)
+    single_i = float(single_metrics["input_i"])
+    single_tp = float(single_metrics["input_tp"])
+    assert -17.0 <= single_i <= -12.0, f"Single-pass loudness {single_i} LUFS outside window [-17, -12]"
+    assert single_tp <= -1.0, f"Single-pass true peak {single_tp} dB exceeds ceiling"
+    verify_decoding_integrity(ffmpeg_bin, out_single)
 
-    # Target is -14.0 LUFS with TP limit of -1.5 dB
-    assert -17.0 <= input_i <= -12.0, f"Measured loudness {input_i} LUFS is outside broadcast window [-17, -12]"
-    assert input_tp <= -1.0, f"True peak {input_tp} dB exceeds maximum ceiling"
+    # 2. Test Genuine Two-Pass linear normalization
+    # Pass 1: Parse measured statistics from baseline
+    pass1_stats = {
+        "input_i": baseline_metrics["input_i"],
+        "input_lra": baseline_metrics["input_lra"],
+        "input_tp": baseline_metrics["input_tp"],
+        "input_thresh": baseline_metrics["input_thresh"],
+        "target_offset": baseline_metrics["target_offset"],
+    }
 
-    # 3. Verify decoding integrity
-    verify_decoding_integrity(ffmpeg_bin, out)
+    # Pass 2: Apply linear normalization using Pass 1 measurements
+    out_twopass = tmp_path / "audio_two_pass.mp4"
+    opts_twopass = {
+        "preset": "landscape",
+        "format": "mp4",
+        "normalize_audio": True,
+        "loudnorm_params": pass1_stats,
+    }
+    cmd_twopass = video.build_command(ffmpeg_bin, sample_video, out_twopass, info, opts_twopass, None)
+    assert any("linear=true" in arg for arg in cmd_twopass), "Two-pass command must configure linear=true filter"
+    assert any(f"measured_I={pass1_stats['input_i']}" in arg for arg in cmd_twopass)
+
+    res_twopass = subprocess.run(cmd_twopass, cwd=sample_video.parent, capture_output=True, text=True, check=False)
+    assert res_twopass.returncode == 0, f"Two-pass FFmpeg loudnorm failed: {res_twopass.stderr}"
+    assert out_twopass.is_file()
+
+    twopass_metrics = measure_audio_loudness(ffmpeg_bin, out_twopass)
+    twopass_i = float(twopass_metrics["input_i"])
+    twopass_tp = float(twopass_metrics["input_tp"])
+    assert -16.0 <= twopass_i <= -12.0, f"Two-pass loudness {twopass_i} LUFS outside target window"
+    assert twopass_tp <= -1.0
+    verify_decoding_integrity(ffmpeg_bin, out_twopass)
+
+    # 3. Baseline comparison and distinguishing single-pass vs genuine two-pass:
+    # A) Baseline vs Processed: baseline loudness and bytes differ from normalized output
+    assert sample_video.read_bytes() != out_single.read_bytes(), "Processed media must differ from baseline media"
+    assert abs(base_i - (-14.0)) > 1.5 or base_tp != single_tp, "Baseline audio metrics must differ from normalized target"
+
+    # B) Distinguish single-pass dynamic from genuine two-pass linear normalization
+    single_filter = next(arg for arg in cmd_single if "loudnorm" in arg)
+    twopass_filter = next(arg for arg in cmd_twopass if "loudnorm" in arg)
+    assert "linear=true" not in single_filter, "Single-pass must not use linear mode"
+    assert "linear=true" in twopass_filter, "Genuine two-pass must configure linear=true"
+    for param in ("measured_I", "measured_LRA", "measured_TP", "measured_thresh", "offset"):
+        assert f"{param}=" in twopass_filter, f"Two-pass filter must include {param}"
+        assert f"{param}=" not in single_filter, f"Single-pass filter must not include {param}"
 
 
 def test_real_ffmpeg_subtitles_captions(ffmpeg_bin: str, ffprobe_bin: str, sample_video: Path, tmp_path: Path):
