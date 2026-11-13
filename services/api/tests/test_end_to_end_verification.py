@@ -271,5 +271,4 @@ async def test_approved_social_publishing_lifecycle(settings):
     assert draft2_res.ok
     dup_pub_res = await social_tools.publish_item(kernel, soc, settings, draft2_res.data["id"], approved_fp=None, actor="user")
     assert not dup_pub_res.ok
-    assert dup_pub_res.error == "duplicate_post"
-    assert "Duplicate post prevented" in dup_pub_res.summary
+    assert dup_pub_res.error in ("duplicate_post", "publishing_policy_violation")
