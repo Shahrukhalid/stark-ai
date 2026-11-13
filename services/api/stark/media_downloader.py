@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any, Callable
 import urllib.error
 import urllib.request
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlunsplit
 
 logger = logging.getLogger("stark.media_downloader")
 
@@ -181,8 +181,29 @@ def _parse_alternate_ip(host_str: str) -> ipaddress.IPv4Address | ipaddress.IPv6
     return None
 
 
+def redact_url_credentials(url: str | Any) -> str:
+    """Strips usernames, passwords, and tokens from a URL or string containing URLs for safe error messages, logs, and job state."""
+    if not url:
+        return ""
+    text = str(url)
+    try:
+        if "://" in text and not any(c in text for c in ("\n", "\r", " ")):
+            parsed = urlsplit(text)
+            if parsed.username or parsed.password:
+                host_part = parsed.hostname or ""
+                if parsed.port:
+                    host_part = f"{host_part}:{parsed.port}"
+                return urlunsplit((parsed.scheme, host_part, parsed.path, parsed.query, parsed.fragment))
+    except Exception:
+        pass
+    # Regex replacement for any user:password@ or token@ embedded in text/error messages
+    return re.sub(r"://[^/\s]+@", "://", text)
+
+
 def validate_proxy_settings(opts: dict[str, Any] | None = None) -> None:
-    """Validates proxy configurations from opts and environment against SSRF attacks."""
+    """Validates proxy configurations from opts and environment against SSRF attacks.
+    Ensures credentials, usernames, and passwords are fully redacted from exception messages.
+    """
     to_check: list[str] = []
     if opts and opts.get("proxy"):
         to_check.append(str(opts["proxy"]))
@@ -194,7 +215,9 @@ def validate_proxy_settings(opts: dict[str, Any] | None = None) -> None:
         try:
             validate_url(proxy_url, resolve_dns=True)
         except Exception as exc:
-            raise MediaDownloaderError(f"SSRF blocked restricted proxy setting ({proxy_url}): {exc}") from exc
+            redacted_proxy = redact_url_credentials(proxy_url)
+            clean_exc = redact_url_credentials(str(exc))
+            raise MediaDownloaderError(f"SSRF blocked restricted proxy setting ({redacted_proxy}): {clean_exc}") from None
 
 
 def validate_url(url: str, resolve_dns: bool = True) -> str:
@@ -382,7 +405,7 @@ def install_ytdlp_ssrf_guards() -> None:
                 try:
                     validate_url(newurl, resolve_dns=True)
                 except Exception as exc:
-                    raise urllib.error.URLError(f"SSRF redirect blocked: {exc}") from exc
+                    raise urllib.error.URLError(f"SSRF redirect blocked: {redact_url_credentials(exc)}") from None
             return _orig_urllib_redirect(self, req, fp, code, msg, headers, newurl)
 
         urllib.request.HTTPRedirectHandler.redirect_request = _safe_urllib_redirect
@@ -395,7 +418,7 @@ def install_ytdlp_ssrf_guards() -> None:
                     try:
                         validate_url(request.url, resolve_dns=True)
                     except Exception as exc:
-                        raise _ytdlp_common.TransportError(f"SSRF blocked: {exc}") from exc
+                        raise _ytdlp_common.TransportError(f"SSRF blocked: {redact_url_credentials(exc)}") from None
                 return orig_send(self, request)
 
             _ytdlp_common.RequestDirector.send = safe_send
@@ -407,7 +430,7 @@ def install_ytdlp_ssrf_guards() -> None:
                     try:
                         validate_url(newurl, resolve_dns=True)
                     except Exception as exc:
-                        raise _ytdlp_urllib.TransportError(f"SSRF redirect blocked: {exc}") from exc
+                        raise _ytdlp_urllib.TransportError(f"SSRF redirect blocked: {redact_url_credentials(exc)}") from None
                 return orig_redirect(self, req, fp, code, msg, headers, newurl)
 
             _ytdlp_urllib.RedirectHandler.redirect_request = safe_redirect
@@ -734,10 +757,10 @@ class MediaDownloader:
                     "thumbnail": info.get("thumbnail") or "",
                     "url": url,
                 }
-        except MediaDownloaderError:
-            raise
+        except MediaDownloaderError as exc:
+            raise MediaDownloaderError(redact_url_credentials(str(exc))) from None
         except Exception as exc:
-            raise MediaDownloaderError(f"Inspection error: {exc}") from exc
+            raise MediaDownloaderError(f"Inspection error: {redact_url_credentials(exc)}") from None
 
     def start_download(
         self,
@@ -816,7 +839,7 @@ class MediaDownloader:
         resolution = job.get("resolution")
 
         if custom_name:
-            stem = safe_filename(custom_name)
+            stem = Path(safe_filename(custom_name)).stem
             outtmpl = str(self.folder / f"{stem}.%(ext)s")
         else:
             outtmpl = str(self.folder / "%(title).60s-%(id)s.%(ext)s")
@@ -1041,7 +1064,7 @@ class MediaDownloader:
                 job["error"] = "Download was cancelled."
             else:
                 job["status"] = "failed"
-                job["error"] = str(exc)[:300]
+                job["error"] = redact_url_credentials(str(exc))[:300]
             self._cleanup_partial_files(job_id)
         finally:
             self._persist_job(job)

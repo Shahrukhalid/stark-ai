@@ -7,7 +7,7 @@ import { Section } from "./ui";
 
 type VFile = { name: string; bytes: number; kind: "video" | "image" | "captions"; transcript?: boolean };
 type Pick = { title: string; hook: string; hashtags: string[]; video: string; thumbnail: string; start: number; end: number; drafts: { platform: string; id?: string; error?: string }[] };
-type Job = { clips?: Pick[]; picked_by?: string | null; id: string; kind: string; status: "queued" | "running" | "done" | "failed" | "cancelled"; progress: number; file: string; output: string | null; captions: string | null; error: string | null; preset?: string; format?: string; model?: string };
+type Job = { clips?: Pick[]; picked_by?: string | null; id: string; kind: string; status: "queued" | "running" | "done" | "failed" | "cancelled"; progress: number; file: string; output: string | null; captions: string | null; error: string | null; preset?: string; format?: string; model?: string; measured_loudness?: { integrated_lufs: number; true_peak_db: number; lra?: number } };
 type Model = { name: string; label: string; installed: boolean };
 type FF = { available: boolean; message?: string; version?: string; burn_captions?: boolean; transitions?: boolean; transcribe?: boolean };
 type Home = { ffmpeg: FF; files: VFile[]; jobs: Job[]; presets: Record<string, { label: string }>; formats: string[]; models: Model[] };
@@ -293,7 +293,7 @@ export function VideoStudio({ talkTo }: { talkTo: (agentId: string, text?: strin
                 <label className="flex items-center gap-1"><input type="radio" checked={o.fit === "pad"} onChange={() => set("fit", "pad")} /> Whole picture (bars)</label>
                 <label className="flex items-center gap-1"><input type="radio" checked={o.fit === "crop"} onChange={() => set("fit", "crop")} /> Fill the frame (crop)</label>
                 <label className="flex items-center gap-1"><input type="checkbox" checked={o.mute} onChange={(e) => set("mute", e.target.checked)} /> Remove sound</label>
-                <label className="flex items-center gap-1"><input type="checkbox" checked={o.normalize_audio} onChange={(e) => set("normalize_audio", e.target.checked)} /> Broadcast audio (-14 LUFS)</label>
+                <label className="flex items-center gap-1"><input type="checkbox" checked={o.normalize_audio} onChange={(e) => set("normalize_audio", e.target.checked)} /> Broadcast audio (-14 LUFS, 2-pass)</label>
               </div>
             </fieldset>
 
@@ -522,6 +522,7 @@ export function VideoStudio({ talkTo }: { talkTo: (agentId: string, text?: strin
                 <div className="flex items-center gap-2">
                   <span className={j.status === "done" ? "text-emerald-300" : j.status === "failed" ? "text-red-300" : j.status === "cancelled" ? "text-[var(--color-mute)]" : "text-cyan-300"}>{KIND[j.kind] || j.kind} · {j.status}</span>
                   <span className="min-w-0 flex-1 truncate">{j.output || j.file}</span>
+                  {j.measured_loudness && <span className="text-[11px] text-cyan-400" title={`True peak: ${j.measured_loudness.true_peak_db} dB`}>({j.measured_loudness.integrated_lufs} LUFS)</span>}
                   {(j.status === "running" || j.status === "queued") && <button className="btn !py-0.5" onClick={() => act("", () => client.del(`/api/video/jobs/${j.id}`))} aria-label="Cancel"><X size={11} /></button>}
                   {j.status === "done" && j.output && j.kind !== "model" && <button className="btn !py-0.5" onClick={() => download(j.output!)} aria-label={`Download ${j.output}`}><Download size={11} /></button>}
                 </div>

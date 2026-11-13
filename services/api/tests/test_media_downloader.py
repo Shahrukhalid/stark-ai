@@ -557,3 +557,36 @@ def test_safe_create_connection_guards():
 
         with pytest.raises(ConnectionRefusedError, match="blocked by SSRF defense"):
             _safe_create_connection(("8.8.8.8", 22))  # restricted port
+
+
+def test_proxy_credential_redaction(monkeypatch):
+    """Verifies that usernames, passwords, tokens, and authenticated proxy URLs are never leaked in exceptions, logs, or error fields."""
+    from stark.media_downloader import redact_url_credentials, validate_proxy_settings
+
+    # 1. Pure helper tests
+    assert redact_url_credentials("http://alice:supersecret123@proxy.internal:8080") == "http://proxy.internal:8080"
+    assert redact_url_credentials("https://token999@secure-proxy.corp:8443/auth") == "https://secure-proxy.corp:8443/auth"
+    assert redact_url_credentials("http://user:pass@127.0.0.1:8080") == "http://127.0.0.1:8080"
+    raw_error = "Failed to connect through http://bot_user:P@ssw0rd#1@10.0.0.5:8080: Connection timed out"
+    clean_error = redact_url_credentials(raw_error)
+    assert "P@ssw0rd#1" not in clean_error
+    assert "bot_user" not in clean_error
+    assert "http://10.0.0.5:8080" in clean_error
+
+    # 2. validate_proxy_settings with options containing credentials
+    with pytest.raises(MediaDownloaderError) as exc_info:
+        validate_proxy_settings({"proxy": "http://auditor_user:SecretP@ssword!@127.0.0.1:8080"})
+    msg = str(exc_info.value)
+    assert "SecretP@ssword!" not in msg
+    assert "auditor_user" not in msg
+    assert "http://127.0.0.1:8080" in msg
+
+    # 3. validate_proxy_settings with environment variables containing credentials
+    monkeypatch.setenv("HTTP_PROXY", "http://env_user:EnvP@ss123@169.254.169.254:3128")
+    with pytest.raises(MediaDownloaderError) as exc_info:
+        validate_proxy_settings({})
+    msg = str(exc_info.value)
+    assert "EnvP@ss123" not in msg
+    assert "env_user" not in msg
+    assert "169.254.169.254" in msg
+

@@ -1516,6 +1516,37 @@ def _get_platform_publish_lock(platform: str) -> asyncio.Lock:
         return _PLATFORM_PUBLISH_LOCKS[platform]
 
 
+def _resolve_lock_dir(settings=None, kernel=None) -> Path:
+    """Resolves the canonical lock directory across processes, instances, and shared databases.
+    Priority:
+    1. STARK_LOCK_DIR environment variable (canonical multi-instance coordination)
+    2. settings.data_dir / 'locks' (if settings.data_dir is configured)
+    3. Shared SQLite database directory (if file-backed SQLite database is configured)
+    4. Canonical fallback: Path(STARK_DATA / 'locks') or Path.home() / '.stark' / 'locks'
+    """
+    env_dir = os.environ.get("STARK_LOCK_DIR")
+    if env_dir:
+        return Path(env_dir)
+
+    if settings and hasattr(settings, "data_dir") and settings.data_dir:
+        return Path(settings.data_dir) / "locks"
+
+    # If settings or kernel has a shared file-backed SQLite database
+    db_url = None
+    if settings and getattr(settings, "database_url", None):
+        db_url = str(settings.database_url)
+    elif kernel and hasattr(kernel, "db") and getattr(kernel.db, "url", None):
+        db_url = str(kernel.db.url)
+
+    if db_url and db_url.startswith("sqlite:///") and not db_url.startswith("sqlite:///:memory:"):
+        db_path = Path(db_url.replace("sqlite:///", ""))
+        if db_path.parent.is_dir():
+            return db_path.parent / "locks"
+
+    base = os.environ.get("STARK_DATA") or os.environ.get("STARK_DESKTOP_DATA") or str(Path.home() / ".stark")
+    return Path(base) / "locks"
+
+
 @contextmanager
 def _interprocess_platform_lock(platform: str, lock_dir: Path | None = None, timeout_s: float = 15.0):
     """Cross-process and cross-instance file lock ensuring multi-process concurrency safety.
@@ -1523,8 +1554,7 @@ def _interprocess_platform_lock(platform: str, lock_dir: Path | None = None, tim
     Fails closed if the lock file cannot be initialized or acquired.
     """
     if lock_dir is None:
-        base = os.environ.get("STARK_DATA") or os.environ.get("STARK_DESKTOP_DATA") or str(Path.home() / ".stark")
-        lock_dir = Path(base) / "locks"
+        lock_dir = _resolve_lock_dir()
     try:
         lock_dir.mkdir(parents=True, exist_ok=True)
         lock_file = lock_dir / f"publish_{platform}.lock"
@@ -1576,8 +1606,7 @@ async def _async_interprocess_platform_lock(platform: str, lock_dir: Path | None
     Fails closed if the lock cannot be initialized or acquired.
     """
     if lock_dir is None:
-        base = os.environ.get("STARK_DATA") or os.environ.get("STARK_DESKTOP_DATA") or str(Path.home() / ".stark")
-        lock_dir = Path(base) / "locks"
+        lock_dir = _resolve_lock_dir()
     try:
         lock_dir.mkdir(parents=True, exist_ok=True)
         lock_file = lock_dir / f"publish_{platform}.lock"
@@ -1651,7 +1680,7 @@ async def publish_item(kernel, social: "Social", settings, item_id: str, *, appr
     # Concurrency-safe publishing gate: lock prevents race conditions on quotas and deduplication
     lock = _get_platform_publish_lock(item["platform"])
     async with lock:
-        lock_dir = Path(settings.data_dir) / "locks" if hasattr(settings, "data_dir") and settings.data_dir else None
+        lock_dir = _resolve_lock_dir(settings, kernel)
         try:
             async with _async_interprocess_platform_lock(item["platform"], lock_dir=lock_dir):
                 # If publishing live via an external platform adapter, enforce safety policy and deduplication
