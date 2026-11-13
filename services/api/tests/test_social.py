@@ -775,3 +775,72 @@ def test_interprocess_platform_lock_concurrency(tmp_path: Path):
     assert acquired_order == [f"start_{first_worker}", f"end_{first_worker}", f"start_{second_worker}", f"end_{second_worker}"]
 
 
+def test_interprocess_platform_lock_fail_closed(tmp_path: Path):
+    """Verifies that _interprocess_platform_lock raises RuntimeError if lock directory cannot be created."""
+    from stark.tools.social import _interprocess_platform_lock
+    blocker_file = tmp_path / "not_a_dir"
+    blocker_file.write_text("blocked")
+    bad_dir = blocker_file / "locks"
+
+    with pytest.raises(RuntimeError, match="Could not initialize cross-process lock"):
+        with _interprocess_platform_lock("bluesky", lock_dir=bad_dir, timeout_s=0.5):
+            pass
+
+
+async def test_async_interprocess_platform_lock_fail_closed(tmp_path: Path):
+    """Verifies that _async_interprocess_platform_lock raises RuntimeError if lock directory cannot be created."""
+    from stark.tools.social import _async_interprocess_platform_lock
+    blocker_file = tmp_path / "not_a_dir_async"
+    blocker_file.write_text("blocked")
+    bad_dir = blocker_file / "locks"
+
+    with pytest.raises(RuntimeError, match="Could not initialize cross-process lock"):
+        async with _async_interprocess_platform_lock("bluesky", lock_dir=bad_dir, timeout_s=0.5):
+            pass
+
+
+async def test_publish_item_fails_closed_on_lock_failure(settings):
+    """Verifies that publish_item fails closed with error='lock_failed' when the cross-process lock fails."""
+    k, _ = make_kernel(settings)
+    # Create a regular file where the locks directory should be, so lock_dir.mkdir() fails
+    lock_path = settings.data_dir / "locks"
+    lock_path.write_text("block")
+
+    sc = Social(settings, httpx.MockTransport(lambda req: httpx.Response(200)))
+    item = await _draft(k, platform="mastodon", text="Fail closed lock test")
+
+    res = await social.publish_item(k, sc, settings, item["id"], approved_fp=None, actor="user")
+    assert not res.ok
+    assert res.error == "lock_failed"
+    assert "Publishing blocked: lock failure" in res.summary
+
+
+async def test_async_interprocess_platform_lock_non_blocking(tmp_path: Path):
+    """Confirms that waiting for the cross-process lock does not starve other tasks on the asyncio loop."""
+    from stark.tools.social import _async_interprocess_platform_lock
+
+    lock_dir = tmp_path / "async_locks"
+    other_task_ticks = 0
+
+    async def background_counter():
+        nonlocal other_task_ticks
+        for _ in range(5):
+            await asyncio.sleep(0.02)
+            other_task_ticks += 1
+
+    async def lock_holder():
+        async with _async_interprocess_platform_lock("mastodon", lock_dir=lock_dir, timeout_s=2.0):
+            await asyncio.sleep(0.15)
+
+    async def lock_waiter():
+        await asyncio.sleep(0.01)
+        async with _async_interprocess_platform_lock("mastodon", lock_dir=lock_dir, timeout_s=2.0):
+            pass
+
+    counter_task = asyncio.create_task(background_counter())
+    await asyncio.gather(lock_holder(), lock_waiter())
+    await counter_task
+
+    assert other_task_ticks >= 3, f"Expected event loop concurrency, got {other_task_ticks} ticks"
+
+

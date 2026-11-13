@@ -447,7 +447,18 @@ def build_command(exe: str, src: Path, out: Path, info: dict[str, Any], opts: di
         if vol != 1.0:
             af.append(f"volume={min(3.0, max(0.0, vol)):g}")
         if opts.get("normalize_audio"):
-            af.append("loudnorm=I=-14:LRA=11:TP=-1.5")
+            two_pass = opts.get("loudnorm_params")
+            if two_pass and isinstance(two_pass, dict):
+                m_i = two_pass.get("input_i", "-14")
+                m_lra = two_pass.get("input_lra", "11")
+                m_tp = two_pass.get("input_tp", "-1.5")
+                m_thresh = two_pass.get("input_thresh", "-24")
+                offset = two_pass.get("target_offset", "0.0")
+                af.append(
+                    f"loudnorm=I=-14:LRA=11:TP=-1.5:measured_I={m_i}:measured_LRA={m_lra}:measured_TP={m_tp}:measured_thresh={m_thresh}:offset={offset}:linear=true"
+                )
+            else:
+                af.append("loudnorm=I=-14:LRA=11:TP=-1.5")
         if fade > 0:
             af.append(f"afade=t=in:st=0:d={fade:.2f},afade=t=out:st={out_len - fade:.2f}:d={fade:.2f}")
 

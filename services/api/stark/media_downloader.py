@@ -128,6 +128,75 @@ def _is_ip_allowed(ip_str: str) -> bool:
         return False
 
 
+def _parse_alternate_ip(host_str: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+    """Parses various string representations of IP addresses including standard dotted-decimal,
+    bracketed IPv6, IPv4-mapped IPv6, single integer (decimal), hex (0x...), octal (0...),
+    and dotted hex/octal parts.
+    """
+    clean = str(host_str or "").strip().lower().strip("[]")
+    if not clean:
+        return None
+    # 1. Standard ip_address parse
+    try:
+        return ipaddress.ip_address(clean)
+    except ValueError:
+        pass
+
+    # 2. Single integer / hex / octal value (e.g. 2130706433, 0x7f000001, 017700000001)
+    try:
+        if clean.startswith(("0x", "0X")):
+            val = int(clean, 16)
+        elif clean.startswith("0") and clean.isdigit() and len(clean) > 1:
+            val = int(clean, 8)
+        elif clean.isdigit():
+            val = int(clean, 10)
+        else:
+            val = None
+        if val is not None and 0 <= val <= 0xFFFFFFFF:
+            return ipaddress.IPv4Address(val)
+    except (ValueError, OverflowError):
+        pass
+
+    # 3. Dotted parts with hex or octal notation (e.g., 0x7f.0.0.1 or 0177.0.0.1)
+    parts = clean.split(".")
+    if len(parts) == 4:
+        try:
+            byte_vals = []
+            for p in parts:
+                if p.startswith(("0x", "0X")):
+                    bv = int(p, 16)
+                elif p.startswith("0") and p.isdigit() and len(p) > 1:
+                    bv = int(p, 8)
+                elif p.isdigit():
+                    bv = int(p, 10)
+                else:
+                    return None
+                if not (0 <= bv <= 255):
+                    return None
+                byte_vals.append(bv)
+            return ipaddress.IPv4Address(bytes(byte_vals))
+        except (ValueError, OverflowError):
+            pass
+
+    return None
+
+
+def validate_proxy_settings(opts: dict[str, Any] | None = None) -> None:
+    """Validates proxy configurations from opts and environment against SSRF attacks."""
+    to_check: list[str] = []
+    if opts and opts.get("proxy"):
+        to_check.append(str(opts["proxy"]))
+    for env_var in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"):
+        val = os.environ.get(env_var)
+        if val:
+            to_check.append(val)
+    for proxy_url in to_check:
+        try:
+            validate_url(proxy_url, resolve_dns=True)
+        except Exception as exc:
+            raise MediaDownloaderError(f"SSRF blocked restricted proxy setting ({proxy_url}): {exc}") from exc
+
+
 def validate_url(url: str, resolve_dns: bool = True) -> str:
     """Validates public HTTP(S) source URL and guards against SSRF, internal services, and metadata IPs."""
     clean = (url or "").strip()
@@ -160,14 +229,12 @@ def validate_url(url: str, resolve_dns: bool = True) -> str:
     ):
         raise MediaDownloaderError("Access to internal, local, or cloud metadata domains is blocked.")
 
-    # If hostname is an IP literal, validate immediately
-    try:
-        ip = ipaddress.ip_address(hostname)
-        if not _is_ip_allowed(str(ip)):
+    # If hostname is an IP literal or alternate encoding (integer, hex, octal), validate immediately
+    parsed_ip = _parse_alternate_ip(hostname)
+    if parsed_ip is not None:
+        if not _is_ip_allowed(str(parsed_ip)):
             raise MediaDownloaderError("Access to internal, private, or metadata IP addresses is forbidden.")
         return clean
-    except ValueError:
-        pass
 
     # Resolve hostname via DNS and check every resolved IPv4/IPv6 address
     if resolve_dns:
@@ -232,6 +299,12 @@ def _safe_create_connection(address, timeout=socket._GLOBAL_DEFAULT_TIMEOUT, sou
         or host_str.endswith(".onion")
     ):
         raise ConnectionRefusedError(f"SSRF defense blocked connection to internal domain {host_str}")
+
+    # Check alternate numeric/hex/octal IP representations
+    parsed_host_ip = _parse_alternate_ip(host_str)
+    if parsed_host_ip is not None:
+        if not _is_ip_allowed(str(parsed_host_ip)):
+            raise ConnectionRefusedError(f"SSRF defense blocked connection to restricted IP {parsed_host_ip}")
 
     # Resolve destination using getaddrinfo
     try:
@@ -628,6 +701,7 @@ class MediaDownloader:
         }
         if self.ffmpeg_exe and os.path.exists(self.ffmpeg_exe):
             opts["ffmpeg_location"] = os.path.dirname(self.ffmpeg_exe)
+        validate_proxy_settings(opts)
         try:
             with ssrf_socket_guard():
                 with yt_dlp.YoutubeDL(opts) as ydl:
@@ -779,6 +853,8 @@ class MediaDownloader:
         else:
             ydl_opts["format"] = "bestvideo+bestaudio/best"
             ydl_opts["merge_output_format"] = "mp4"
+
+        validate_proxy_settings(ydl_opts)
 
         last_progress_time = 0.0
 

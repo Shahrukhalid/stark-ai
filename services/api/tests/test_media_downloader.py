@@ -476,3 +476,84 @@ def test_playlist_full_file_verification(tmp_path: Path):
 
 def test_ytdlp_availability():
     assert ytdlp_available() is True
+
+
+def test_ssrf_alternate_ip_encodings():
+    """Confirms SSRF defenses block alternate decimal, hex, octal, and mapped IP representations."""
+    # Decimal representations: 2130706433 is 127.0.0.1; 2852039166 is 169.254.169.254
+    with pytest.raises(MediaDownloaderError, match="Access to internal"):
+        validate_url("http://2130706433/video.mp4", resolve_dns=False)
+
+    with pytest.raises(MediaDownloaderError, match="Access to internal"):
+        validate_url("http://2852039166/latest/meta-data/", resolve_dns=False)
+
+    # Hex representations: 0x7f000001 is 127.0.0.1; 0xa9fea9fe is 169.254.169.254
+    with pytest.raises(MediaDownloaderError, match="Access to internal"):
+        validate_url("http://0x7f000001/video.mp4", resolve_dns=False)
+
+    with pytest.raises(MediaDownloaderError, match="Access to internal"):
+        validate_url("http://0xa9fea9fe/latest/meta-data/", resolve_dns=False)
+
+    # Octal representation: 017700000001 is 127.0.0.1
+    with pytest.raises(MediaDownloaderError, match="Access to internal"):
+        validate_url("http://017700000001/video.mp4", resolve_dns=False)
+
+    # Dotted hex/octal notation: 0x7f.0.0.1, 0177.0.0.1
+    with pytest.raises(MediaDownloaderError, match="Access to internal"):
+        validate_url("http://0x7f.0.0.1/video.mp4", resolve_dns=False)
+
+    with pytest.raises(MediaDownloaderError, match="Access to internal"):
+        validate_url("http://0177.0.0.1/video.mp4", resolve_dns=False)
+
+    # IPv4 mapped in IPv6
+    with pytest.raises(MediaDownloaderError, match="Access to internal"):
+        validate_url("http://[::ffff:127.0.0.1]/video.mp4", resolve_dns=False)
+
+    with pytest.raises(MediaDownloaderError, match="Access to internal"):
+        validate_url("http://[::ffff:169.254.169.254]/video.mp4", resolve_dns=False)
+
+
+def test_ssrf_proxy_validation(monkeypatch):
+    """Confirms proxy configuration checks reject internal, loopback, and metadata destinations."""
+    from stark.media_downloader import validate_proxy_settings
+
+    # Explicit proxy in options
+    with pytest.raises(MediaDownloaderError, match="SSRF blocked restricted proxy setting"):
+        validate_proxy_settings({"proxy": "http://127.0.0.1:8080"})
+
+    with pytest.raises(MediaDownloaderError, match="SSRF blocked restricted proxy setting"):
+        validate_proxy_settings({"proxy": "http://169.254.169.254:3128"})
+
+    with pytest.raises(MediaDownloaderError, match="SSRF blocked restricted proxy setting"):
+        validate_proxy_settings({"proxy": "http://0x7f000001:8080"})
+
+    # Environment variables
+    monkeypatch.setenv("HTTP_PROXY", "http://10.0.0.1:8080")
+    with pytest.raises(MediaDownloaderError, match="SSRF blocked restricted proxy setting"):
+        validate_proxy_settings({})
+
+    monkeypatch.setenv("HTTP_PROXY", "")
+    monkeypatch.setenv("ALL_PROXY", "http://metadata.google.internal:8080")
+    with pytest.raises(MediaDownloaderError, match="SSRF blocked restricted proxy setting"):
+        validate_proxy_settings({})
+
+
+def test_safe_create_connection_guards():
+    """Confirms _safe_create_connection blocks forbidden IP literals directly at the socket level."""
+    from stark.media_downloader import _safe_create_connection, ssrf_socket_guard
+
+    with ssrf_socket_guard():
+        with pytest.raises(ConnectionRefusedError, match="SSRF defense blocked connection"):
+            _safe_create_connection(("127.0.0.1", 80))
+
+        with pytest.raises(ConnectionRefusedError, match="SSRF defense blocked connection"):
+            _safe_create_connection(("2130706433", 80))
+
+        with pytest.raises(ConnectionRefusedError, match="SSRF defense blocked connection"):
+            _safe_create_connection(("0x7f000001", 80))
+
+        with pytest.raises(ConnectionRefusedError, match="SSRF defense blocked connection"):
+            _safe_create_connection(("169.254.169.254", 80))
+
+        with pytest.raises(ConnectionRefusedError, match="blocked by SSRF defense"):
+            _safe_create_connection(("8.8.8.8", 22))  # restricted port

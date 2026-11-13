@@ -159,9 +159,20 @@ jobs:
             NOTES_ARGS=(--notes "Desktop installers for macOS and Windows: download, install, open STARK AI and follow the setup.")
           fi
 
-          echo "Ensuring draft release exists for $GITHUB_REF_NAME..."
-          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || \
+          echo "Checking whether release $GITHUB_REF_NAME already exists and is published..."
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            IS_DRAFT=$(gh release view "$GITHUB_REF_NAME" --json isDraft -q .isDraft)
+            if [ "$IS_DRAFT" = "false" ]; then
+              echo "CRITICAL ERROR: Release $GITHUB_REF_NAME is already published and immutable!"
+              echo "Workflow reruns are forbidden from overwriting published release assets."
+              echo "Please increment the version and tag a new release."
+              exit 1
+            fi
+            echo "Draft release $GITHUB_REF_NAME exists; proceeding with transactional update."
+          else
+            echo "Creating new draft release for $GITHUB_REF_NAME..."
             gh release create "$GITHUB_REF_NAME" --draft --title "STARK AI ${GITHUB_REF_NAME#v}" "${NOTES_ARGS[@]}"
+          fi
 
           echo "Uploading all assets to draft release..."
           for f in release_assets/*; do
@@ -169,37 +180,47 @@ jobs:
             gh release upload "$GITHUB_REF_NAME" "$f" --clobber
           done
 
-          echo "Verifying remote release asset integrity, counts, and checksums..."
-          python3 -c "
-          import json, subprocess, sys
+          echo "Verifying remote release asset integrity and cryptographic checksums..."
+          VERIFY_DIR="$(mktemp -d)"
+          echo "Downloading assets from draft release to $VERIFY_DIR..."
+          gh release download "$GITHUB_REF_NAME" --dir "$VERIFY_DIR"
 
-          tag = '$GITHUB_REF_NAME'
-          out = subprocess.check_output(['gh', 'release', 'view', tag, '--json', 'assets']).decode()
-          data = json.loads(out)
-          assets = {a['name']: a['size'] for a in data.get('assets', [])}
+          echo "Running sha256sum validation on downloaded remote assets..."
+          (cd "$VERIFY_DIR" && sha256sum -c SHA256SUMS.txt) || {
+            echo "CRITICAL ERROR: Remote asset SHA-256 checksum mismatch on release $GITHUB_REF_NAME!"
+            rm -rf "$VERIFY_DIR"
+            exit 1
+          }
 
-          expected_assets = [
-              'STARK-AI-Windows-Setup.exe',
-              'STARK-AI-macOS-AppleSilicon.dmg',
-              'STARK-AI-macOS-Intel.dmg',
-              'STARK-OS-Windows-Setup.exe',
-              'STARK-OS-macOS-AppleSilicon.dmg',
-              'STARK-OS-macOS-Intel.dmg',
-              'SHA256SUMS.txt'
-          ]
-
-          for name in expected_assets:
-              if name not in assets:
-                  print(f'CRITICAL ERROR: {name} is missing from draft release {tag}!')
-                  sys.exit(1)
-              min_size = 50 if name.endswith('.txt') else 10485760
-              if assets[name] < min_size:
-                  print(f'CRITICAL ERROR: {name} size ({assets[name]}) is below minimum ({min_size})!')
-                  sys.exit(1)
-              print(f'Verified draft asset: {name} ({assets[name]} bytes)')
-
-          print(f'All {len(expected_assets)} assets verified on draft release {tag}.')
-          "
+          EXPECTED_REMOTE_ASSETS=(
+            "STARK-AI-Windows-Setup.exe"
+            "STARK-AI-macOS-AppleSilicon.dmg"
+            "STARK-AI-macOS-Intel.dmg"
+            "STARK-OS-Windows-Setup.exe"
+            "STARK-OS-macOS-AppleSilicon.dmg"
+            "STARK-OS-macOS-Intel.dmg"
+            "SHA256SUMS.txt"
+          )
+          for asset in "${EXPECTED_REMOTE_ASSETS[@]}"; do
+            if [ ! -f "$VERIFY_DIR/$asset" ]; then
+              echo "CRITICAL ERROR: Expected asset $asset is missing from downloaded release!"
+              rm -rf "$VERIFY_DIR"
+              exit 1
+            fi
+            size=$(wc -c < "$VERIFY_DIR/$asset" | tr -d ' ')
+            min_size=50
+            if [[ "$asset" != *.txt ]]; then
+              min_size=10485760
+            fi
+            if [ "$size" -lt "$min_size" ]; then
+              echo "CRITICAL ERROR: Asset $asset size ($size) is below minimum threshold ($min_size)!"
+              rm -rf "$VERIFY_DIR"
+              exit 1
+            fi
+            echo "Verified remote asset: $asset ($size bytes, SHA-256 OK)"
+          done
+          rm -rf "$VERIFY_DIR"
+          echo "All expected remote assets and checksums verified successfully."
 
           echo "Publishing verified draft release $GITHUB_REF_NAME to public..."
           gh release edit "$GITHUB_REF_NAME" --draft=false
