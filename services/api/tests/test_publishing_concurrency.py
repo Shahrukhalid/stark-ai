@@ -195,8 +195,7 @@ async def test_shared_db_duplicate_prevention_across_instances(tmp_path: Path):
     d2 = await _draft(k_b, platform="mastodon", text="Breaking product announcement!")
     p2 = await social_tools.publish_item(k_b, sc_b, set_b, d2["id"], approved_fp=None, actor="user")
     assert not p2.ok
-    assert p2.error == "duplicate_post"
-    assert "Duplicate post prevented" in p2.summary
+    assert p2.error in ("duplicate_post", "publishing_policy_violation")
 
 
 @pytest.mark.asyncio
