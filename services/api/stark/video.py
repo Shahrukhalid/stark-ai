@@ -21,9 +21,9 @@ import uuid
 from pathlib import Path
 from typing import Any, Callable
 
-logger = logging.getLogger("stark.video")
-
 from .power import keep_awake
+
+logger = logging.getLogger("stark.video")
 
 VIDEO_DIR = "media/video"
 VIDEO_TYPES = {".mp4", ".mov", ".m4v", ".webm", ".mkv"}

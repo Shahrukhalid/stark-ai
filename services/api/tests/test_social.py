@@ -553,8 +553,8 @@ def test_bluesky_text_handling_matches_the_platform():
     tags = [f["features"][0]["tag"] for f in bluesky_facets("Bonjour #café #日本 #2026 #launch")
             if f["features"][0]["$type"].endswith("#tag")]
     assert tags == ["café", "日本", "launch"]
-    link = bluesky_facets("Read https://en.wikipedia.org/wiki/Foo_(bar). Thanks")[0]["features"][0]["uri"]
-    assert link == "https://en.wikipedia.org/wiki/Foo_(bar)"
+    link = bluesky_facets("Read https://example.org/wiki/Foo_(bar). Thanks")[0]["features"][0]["uri"]
+    assert link == "https://example.org/wiki/Foo_(bar)"
     family = "\U0001F468‍\U0001F469‍\U0001F467"
     assert grapheme_len(family) == 1 and grapheme_len("\U0001F1FA\U0001F1F8") == 1 and grapheme_len("é") == 1
     assert grapheme_len("\U0001F44D\U0001F3FD") == 1

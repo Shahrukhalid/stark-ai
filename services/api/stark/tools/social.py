@@ -267,7 +267,7 @@ def load_attachments(settings, item: dict[str, Any]) -> list[tuple[dict[str, Any
 
 
 def find_urls(text: str) -> list[tuple[int, int]]:
-    """URL spans. A closing parenthesis is kept when it balances one inside the URL (Wikipedia links)."""
+    """URL spans. A closing parenthesis is kept when it balances one inside the URL (encyclopedia-style links)."""
     spans = []
     for m in URL_RE.finditer(text):
         end = m.end()

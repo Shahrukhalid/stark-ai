@@ -20,12 +20,11 @@ FFmpeg source code: https://ffmpeg.org/download.html · build details: https://g
 
 Distributors must retain these packages' license files and transitive dependency notices. This does not change the application's existing MIT license.
 
-## MakeHuman base mesh and targets (CC0 1.0)
+## Human base mesh and targets (CC0 1.0)
 
-The feminine and masculine presence figures (`apps/web/lib/presence-data.ts`) are point clouds baked from the
-MakeHuman base mesh and macro targets, released into the public domain under CC0 1.0 by the MakeHuman team
-(Data Collection AB, Joel Palmius, Jonas Hauquier; original work by Manuel Bastioni). They are synthetic humans and
-do not depict any real person. https://github.com/makehumancommunity/makehuman
+The feminine and masculine presence figures (`apps/web/lib/presence-data.ts`) are point clouds baked from an open
+human base mesh and macro targets released into the public domain under CC0 1.0. They are synthetic humans and do
+not depict any real person.
 
 ## Noto Nastaliq Urdu (SIL Open Font License 1.1)
 

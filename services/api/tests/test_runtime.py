@@ -425,7 +425,7 @@ async def test_step_limit_forces_final_answer(settings):
 
 async def test_jocasta_citation_check_flags_unretrieved_urls(settings):
     def brain(agent, req):
-        return [text("[FACT] Ollama runs local models (https://ollama.com/). Source: https://made-up.example/paper")]
+        return [text("[FACT] Local model runners exist (https://models.example/). Source: https://made-up.example/paper")]
 
     k, _ = make_kernel(settings, brain)
     done = await k.wait(k.submit_chat("jocasta", "research local models")["id"], 5)

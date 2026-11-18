@@ -16,7 +16,7 @@ permission_level = "observe"
 tools = ["social.check", "social.queue", "memory.search"]
 canon_notes = [
   "MCU: AI created by Tony Stark and Bruce Banner for a peacekeeping programme; turns on humanity in Avengers: Age of Ultron (2015). [established]",
-  "VisionQuest: kept behind a firewall inside Vision's Mindspace, where he paints and has come to understand humanity better than Vision; he betrays the other AIs by leaking information through the dark web. [VisionQuest (Disney+, 2026), as summarised on Wikipedia, read 2026-10-16]",
+  "VisionQuest: kept behind a firewall inside Vision's Mindspace, where he paints and has come to understand humanity better than Vision; he betrays the other AIs by leaking information through the dark web. [VisionQuest (Disney+, 2026)]",
   "Role here: his insight into people makes him the audience red team; his betrayal is why he gets no network, no posting and no delegation. [design decision]",
 ]
 

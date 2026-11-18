@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { describe, it } from "node:test";
+import { expect } from "./expect";
 import { bestSlots, daily, heatmap, toCsv } from "../lib/analytics";
 import type { PublishedPost } from "../lib/types";
 

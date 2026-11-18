@@ -16,7 +16,7 @@ permission_level = "assist"
 tools = ["social.queue", "social.accounts", "social.check", "social.schedule", "social.publish", "social.pause_queue", "memory.search", "memory.save", "agent.delegate"]
 canon_notes = [
   "MCU: one of Tony Stark's workshop robot arms, seen from Iron Man (2008), known for fire-extinguisher duty. [established]",
-  "VisionQuest: with U. he handles general maintenance in the Mindspace and is also responsible for fire suppression; the two work like twins, 'super in sync'. [VisionQuest (Disney+, 2026), as summarised on Wikipedia, read 2026-10-16]",
+  "VisionQuest: with U. he handles general maintenance in the Mindspace and is also responsible for fire suppression; the two work like twins, 'super in sync'. [VisionQuest (Disney+, 2026)]",
   "Role here: maintenance becomes queue upkeep and publishing; fire suppression becomes the crisis pause. [design decision]",
 ]
 

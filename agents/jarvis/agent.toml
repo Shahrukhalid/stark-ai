@@ -16,7 +16,7 @@ permission_level = "execute_approved"
 tools = ["library.list", "agent.delegate", "team.review", "social.accounts", "social.queue", "social.check", "social.review", "social.discard", "publishing.health", "media.analyze", "media.download", "security.audit_config", "fs.list", "fs.read", "fs.search", "fs.propose_organization", "fs.move", "fs.write", "docs.ingest", "memory.search", "memory.save"]
 canon_notes = [
   "MCU: Tony Stark's first AI, introduced in Iron Man (2008); used to create Vision in Avengers: Age of Ultron (2015). [established]",
-  "VisionQuest: inside Vision's Mindspace his human avatar resembles Edwin Jarvis and he works on security AI, housekeeping and encryption; he warns Vision against rash choices. [VisionQuest (Disney+, 2026), as summarised on Wikipedia, read 2026-10-16]",
+  "VisionQuest: inside Vision's Mindspace his human avatar resembles Edwin Jarvis and he works on security AI, housekeeping and encryption; he warns Vision against rash choices. [VisionQuest (Disney+, 2026)]",
   "Role here: security + housekeeping become pre-publish brand/security review and calendar upkeep. [design decision]",
 ]
 

@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { describe, it } from "node:test";
+import { each, expect } from "./expect";
 import { detectWake, parseAddress } from "../lib/addressing";
 import { isUrdu, pickVoice, speak, speakable } from "../lib/voice";
 
@@ -20,7 +21,7 @@ const CASES: [string, string | null, string][] = [
 ];
 
 describe("agent addressing", () => {
-  it.each(CASES)("%s", (utterance, agent, rest) => {
+  each(CASES)("%s", (utterance, agent, rest) => {
     expect(parseAddress(utterance)).toEqual({ agent, rest });
   });
   it("wake word only triggers on a leading agent name", () => {

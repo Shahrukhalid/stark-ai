@@ -141,10 +141,10 @@ async def test_web_fetch_extracts_text_and_records_source(kctx, settings):
     k, ctx = kctx
     settings.allow_private_fetch = True  # MockTransport host; DNS-based SSRF check tested separately
     site = _mock_site({"/robots.txt": (200, "text/plain", "User-agent: *\nDisallow: /private\n"),
-                       "/page": (200, "text/html", "<html><head><title>Ollama Docs</title></head><body>"
+                       "/page": (200, "text/html", "<html><head><title>Model Docs</title></head><body>"
                                  "<script>evil()</script><h1>Run models</h1><p>Local LLMs.</p></body></html>")})
     res = await WebFetch(site).run(WebFetch.Input(url="https://docs.example.org/page"), ctx("jocasta"))
-    assert res.ok and res.data["title"] == "Ollama Docs"
+    assert res.ok and res.data["title"] == "Model Docs"
     assert "Run models" in res.data["text"] and "evil" not in res.data["text"]
     assert res.sources[0]["url"] == "https://docs.example.org/page"
     blocked = await WebFetch(site).run(WebFetch.Input(url="https://docs.example.org/private/x"), ctx("jocasta"))
@@ -195,11 +195,11 @@ async def test_web_search_requires_credentials_then_works(kctx, settings):
     assert tool.availability()[0] is Availability.REQUIRES_CREDENTIALS
     settings.tavily_api_key = "tvly-test"
     transport = httpx.MockTransport(lambda r: httpx.Response(200, json={"results": [
-        {"title": "Ollama", "url": "https://ollama.com/", "content": "Get up and running with LLMs"}]}))
+        {"title": "Local models", "url": "https://models.example/", "content": "Get up and running with LLMs"}]}))
     tool = WebSearch(settings, transport)
     assert tool.availability()[0] is Availability.IMPLEMENTED
     res = await tool.run(WebSearch.Input(query="local llm"), ctx("jocasta"))
-    assert res.ok and res.data["results"][0]["url"] == "https://ollama.com/"
+    assert res.ok and res.data["results"][0]["url"] == "https://models.example/"
     assert res.sources[0]["via"] == "search"
 
 

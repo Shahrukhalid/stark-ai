@@ -1,6 +1,6 @@
 /**
- * Point clouds for the feminine and masculine presence, baked from the MakeHuman base mesh and targets
- * (released as CC0 1.0 by the MakeHuman team; synthetic humans, not any real person).
+ * Point clouds for the feminine and masculine presence, baked from an open human base mesh and targets
+ * (public domain, CC0 1.0; synthetic humans, not any real person).
  * Points: x, y, z, nx, ny, nz, brightness, kind (0 skin, 1 eye, 2 hair, 3 lattice node) as signed bytes, base64.
  * The first *_NODES points are lattice nodes; *_EDGES joins them (little-endian uint16 pairs, base64).
  */
