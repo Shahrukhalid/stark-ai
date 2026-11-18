@@ -2,7 +2,9 @@
 # Rebuild apps/web/lib/presence-data.ts from a MakeHuman checkout (CC0 assets):
 #   python scripts/bake-presence.py <makehuman>/makehuman/data out.json
 """Bake CC0 MakeHuman base heads into presence point clouds (positions, normals, brightness)."""
-import base64, json, math, sys
+import base64
+import json
+import sys
 import numpy as np
 D = sys.argv[1]
 rng = np.random.default_rng(5)

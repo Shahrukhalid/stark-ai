@@ -6,6 +6,7 @@ import asyncio
 
 import json
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import httpx
 import pytest
@@ -587,6 +588,12 @@ def test_bluesky_limit_uses_graphemes_not_code_points():
 def test_grapheme_fallback_still_handles_common_emoji():
     assert social._approx_grapheme_len("\U0001F468\u200d\U0001F469\u200d\U0001F467") == 1
     assert social._approx_grapheme_len("\U0001F1FA\U0001F1F8") == 1
+
+
+def test_bluesky_counts_indic_text_like_the_browser():
+    # Counted the way a browser's text segmenter counts them (what Bluesky's apps use).
+    assert social.weighted_length("bluesky", "\u0928\u092e\u0938\u094d\u0924\u0947") == 3  # नमस्ते
+    assert social.weighted_length("bluesky", "\u0b95\u0bcd\u0bb7") == 2  # க்ஷ
 
 
 # ------------------------------------------------------------------ real image upload (#11)
