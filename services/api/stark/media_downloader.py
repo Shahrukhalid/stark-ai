@@ -9,7 +9,6 @@ disk space checks, partial-file cleanup, and E-STOP cancellation.
 
 from __future__ import annotations
 
-import asyncio
 from contextlib import contextmanager
 import html
 import ipaddress
@@ -23,7 +22,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 import urllib.error
 import urllib.request
 from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
@@ -382,10 +381,10 @@ def _safe_create_connection(address, timeout=socket._GLOBAL_DEFAULT_TIMEOUT, sou
     Directly connects to verified publicly routable destination IP, eliminating TOCTOU DNS rebinding races.
     """
     if not getattr(_SSRF_GUARD_ACTIVE, "active", False):
-        return _ORIG_CREATE_CONNECTION(address, timeout=timeout, source_address=source_address, *args, **kwargs)
+        return _ORIG_CREATE_CONNECTION(address, timeout, source_address, *args, **kwargs)
 
     if not (isinstance(address, (list, tuple)) and len(address) >= 2):
-        return _ORIG_CREATE_CONNECTION(address, timeout=timeout, source_address=source_address, *args, **kwargs)
+        return _ORIG_CREATE_CONNECTION(address, timeout, source_address, *args, **kwargs)
 
     host, port = address[0], address[1]
     if isinstance(port, int) and port in _DISALLOWED_PORTS:

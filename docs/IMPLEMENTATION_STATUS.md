@@ -11,7 +11,7 @@ Legend: ✅ **Implemented & tested** · 🟡 **Implemented, not fully live-teste
 | Suite | Result |
 |---|---|
 | Backend `pytest` (runtime, social tools & adapters, Autopilot, tools, permissions, memory, free-model pool, API, security regressions, automations) | **238 passed** (7 PostgreSQL-only skipped locally) on Python 3.13 and real Chromium |
-| Frontend type-check + `vitest` | **26 passed** |
+| Frontend type-check + unit tests | **34 passed** |
 | End-to-end (Playwright: real dashboard + real API + a test-only scripted server speaking the OpenRouter protocol) | **22 passed** (incl. Automations, Library, Listening, Studio, Live, Calendar, Analytics and the command palette;  Autopilot campaign → research → writing → fact-check → batch approval, one-click publish, approved auto-publish at a time, account-connect checks, chat approval card, inbox triage, 360 px layout, safe markdown) |
 | `next build` | passed · `npm audit`: **0 vulnerabilities** · `pip-audit`: **0 known vulnerabilities** |
 | Secret scan (gitleaks) on the publishable tree | no leaks |

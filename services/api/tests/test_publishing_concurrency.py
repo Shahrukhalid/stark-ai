@@ -1,20 +1,19 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 import os
 from pathlib import Path
 import subprocess
 import sys
 import pytest
-from sqlalchemy import select, update
 import httpx
 
 from stark.config import Settings
 from stark.core.db import Database, ContentItem
 from stark.core.runtime import ToolContext
 from stark.main import build_kernel
-from stark.tools.social import Social, _resolve_lock_dir, _interprocess_platform_lock, _async_interprocess_platform_lock
+from stark.tools.social import Social, _resolve_lock_dir
 from stark.tools import social as social_tools
 
 
@@ -46,7 +45,7 @@ async def test_cross_process_file_locking_mutual_exclusion(tmp_path: Path):
     lock_dir = tmp_path / "proc_locks"
     lock_dir.mkdir(parents=True, exist_ok=True)
 
-    worker_code = f"""
+    worker_code = """
 import sys, time
 from pathlib import Path
 from stark.tools.social import _interprocess_platform_lock
@@ -66,7 +65,7 @@ except TimeoutError:
     print("TIMEOUT", flush=True)
     sys.exit(2)
 except Exception as e:
-    print(f"ERROR: {{e}}", flush=True)
+    print(f"ERROR: {e}", flush=True)
     sys.exit(1)
 """
     script = tmp_path / "lock_worker.py"

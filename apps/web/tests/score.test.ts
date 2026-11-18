@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { describe, it } from "node:test";
+import { expect } from "./expect";
 import { features, nextPlanSlot, scoreDraft } from "../lib/score";
 import type { PublishedPost } from "../lib/types";
 
