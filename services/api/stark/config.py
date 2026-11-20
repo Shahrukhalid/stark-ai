@@ -81,6 +81,9 @@ class Settings:
     voice_tts_model: str = ""
     desktop: bool = False  # the engine runs inside the desktop app on the user's computer
     computer_control: bool = False  # let Vision and Wanda click and type (each action still asks first)
+    ollama_base_url: str = ""  # opt-in literal loopback only
+    ollama_model: str = ""
+    default_provider: str = "openrouter"
 
     # budgets & limits
     task_token_budget: int = 200_000
@@ -154,6 +157,9 @@ class Settings:
             agents_dir=Path(_env("STARK_AGENTS_DIR", str(REPO_ROOT / "agents"))),
             workspace_roots=[Path(r).expanduser().resolve() for r in roots],
             data_dir=data_dir,
+            ollama_base_url=_env("STARK_OLLAMA_URL"),
+            ollama_model=_env("STARK_OLLAMA_MODEL"),
+            default_provider=_env("STARK_DEFAULT_PROVIDER", "openrouter"),
             openrouter_api_key=_env("OPENROUTER_API_KEY"),
             gemini_api_key=_env("GEMINI_API_KEY"),
             voice_engine=_env("STARK_VOICE_ENGINE", "gemini").lower(),

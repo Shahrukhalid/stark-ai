@@ -100,8 +100,16 @@ def folder(settings) -> Path:
     if not settings.workspace_roots:
         raise VideoError("No workspace folder is set up")
     d = settings.workspace_roots[0] / VIDEO_DIR
-    d.mkdir(parents=True, exist_ok=True)
-    return d
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+    except PermissionError:
+        # A workspace the app can't write to (for example a Docker bind mount owned by another user) must not stop
+        # STARK from starting: media goes to the data folder instead, and the log says why.
+        alt = Path(settings.data_dir) / VIDEO_DIR
+        logging.getLogger("stark.video").warning("Workspace folder %s is not writable; using %s for media.", d.parent, alt)
+        alt.mkdir(parents=True, exist_ok=True)
+        return alt
 
 
 def _find(settings, name: str) -> Path:

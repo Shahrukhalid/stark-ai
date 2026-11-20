@@ -90,6 +90,12 @@ def build_kernel(settings: Settings, providers: dict[str, ModelProvider] | None 
     bus = EventBus()
     tools = build_registry(settings)
     registry = AgentRegistry.load(settings.agents_dir, known_tools=tools.ids())
+    for agent_id, override in db.get_setting("agent_model_overrides", {}).items():
+        if agent_id in registry and isinstance(override, dict):
+            registry.get(agent_id).model.provider = override.get("provider")
+            registry.get(agent_id).model.model = override.get("model")
+            registry.get(agent_id).model.allow_cloud_fallback = override.get("allow_cloud_fallback", False) is True
+            registry.get(agent_id).model.cloud_fallback_model = override.get("cloud_fallback_model")
     router = ModelRouter(settings, providers)
     kernel = Kernel(settings=settings, db=db, bus=bus, registry=registry, tools=tools, router=router)
     # emergency stop = fire suppression: nothing in the content queue can go out until resumed (with approval)
@@ -420,6 +426,8 @@ def create_app(settings: Settings | None = None, providers: dict[str, ModelProvi
     async def lifespan(app: FastAPI):
         holder["k"] = build_kernel(settings, providers)
         app.state.kernel = holder["k"]
+        from .local_models import LocalModels
+        holder["k"].local_models = LocalModels(holder["k"])
         await holder["k"].router.prepare()
         log.info("STARK AI API ready", extra={"ctx": {"agents": holder["k"].registry.ids(),
                                                       "providers": holder["k"].router.configured_providers()}})
@@ -451,11 +459,12 @@ def create_app(settings: Settings | None = None, providers: dict[str, ModelProvi
         holder["k"].automations = automations.Engine(holder["k"], social, settings, holder["k"].notifier)
         background.append(asyncio.create_task(holder["k"].automations.loop()))
         yield
-        scheduler.cancel()
-        for job in background:
+        await holder["k"].local_models.close()
+        stopping = [scheduler, *background, *list(holder["k"]._running.values())]
+        for job in stopping:
             job.cancel()
-        for job in list(holder["k"]._running.values()):
-            job.cancel()
+        await asyncio.gather(*stopping, return_exceptions=True)
+        holder["k"].db.engine.dispose()
 
     async def _snapshot_loop(k: Kernel, social) -> None:
         """Follower counts of connected accounts, a few times a day (the latest one each day is kept)."""
@@ -597,6 +606,14 @@ def create_app(settings: Settings | None = None, providers: dict[str, ModelProvi
             return {"allowed": get_backend().trusted(prompt=True)}
         except ControlError:
             raise HTTPException(409, "Computer control is not available on this computer.") from None
+    from .local_models import LocalModels
+
+    # Endpoints close over a proxy, while job ownership stays on the lifespan service.
+    class ServiceProxy:
+        def __getattr__(self, name):
+            return getattr(holder["k"].local_models, name)
+
+    app.include_router(LocalModels.router(ServiceProxy(), auth))
 
     # ---------------------------------------------------------- system
     @app.get("/api/system/status", dependencies=[api])

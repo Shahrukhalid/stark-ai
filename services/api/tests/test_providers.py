@@ -220,3 +220,65 @@ def test_router_reports_empty_candidate_pool(settings, monkeypatch):
     monkeypatch.setattr(provider, 'candidates', lambda *a, **kw: [])
     with pytest.raises(NoModelAvailable, match='No eligible models'):
         ModelRouter(settings, {'openrouter': provider}).select(k.registry.get('jarvis'))
+
+async def test_local_team_review_does_not_request_cloud_quota(settings, monkeypatch):
+    from .conftest import ScriptedProvider
+    from stark.core.runtime import ToolContext
+    from stark.main import build_kernel
+    local = ScriptedProvider(lambda *_: [{'type':'text','text':'Reviewed.'}], name='local')
+    k = build_kernel(settings, {'local':local})
+    for a in k.registry.all():
+        a.model.provider = 'local'
+    async def forbidden():
+        pytest.fail('local team review must not query cloud quota')
+    monkeypatch.setattr(k, 'free_requests_left', forbidden)
+    sender = k.registry.get('jarvis')
+    task = k._create_task(agent_id='jarvis', instruction='Review locally')
+    k._transition(task['id'], 'thinking')
+    context = ToolContext(kernel=k, agent=sender, task_id=task['id'], root_id=task['id'], settings=settings)
+    result = await k.team_review(context, 'Review this draft', reviewers=['edith'])
+    assert result and local.requests
+
+async def test_cloud_fallback_requires_explicit_agent_policy(settings):
+    from .conftest import ScriptedProvider
+    from stark.main import build_kernel
+    def fail(*args):
+        raise ProviderError('local offline')
+    local = ScriptedProvider(fail, name='ollama')
+    local.default_model = 'test'
+    cloud = ScriptedProvider(lambda *_: [{'type':'text','text':'Cloud answer'}])
+    k = build_kernel(settings, {'ollama':local, 'openrouter':cloud})
+    agent = k.registry.get('jarvis')
+    agent.model.provider = 'ollama'
+    agent.limits.max_retries = 0
+    task = k._create_task(agent_id='jarvis', instruction='Synthetic test')
+    with pytest.raises(ProviderError, match='local offline'):
+        await k._call_model(agent, task, 'System', [{'role':'user','content':'test'}], [])
+    assert not cloud.requests
+    agent.model.allow_cloud_fallback = True
+    agent.model.cloud_fallback_model = 'test:free'
+    result = await k._call_model(agent, task, 'System', [{'role':'user','content':'test'}], [])
+    assert result.text == 'Cloud answer' and len(cloud.requests) == 1
+    agent.model.allow_cloud_fallback = False
+    with pytest.raises(ProviderError):
+        await k._call_model(agent, task, 'System', [], [])
+    assert len(cloud.requests) == 1
+
+async def test_emergency_stop_prevents_authorized_cloud_fallback(settings):
+    from .conftest import ScriptedProvider
+    from stark.main import build_kernel
+    def fail(*args): raise ProviderError('offline')
+    local = ScriptedProvider(fail, name='ollama')
+    local.default_model = 'test'
+    cloud = ScriptedProvider(lambda *_: [])
+    k = build_kernel(settings, {'ollama':local,'openrouter':cloud})
+    agent = k.registry.get('jarvis')
+    agent.model.provider = 'ollama'
+    agent.model.allow_cloud_fallback = True
+    agent.model.cloud_fallback_model = 'test:free'
+    k.perms.emergency_stop = True
+    task = k._create_task(agent_id='jarvis', instruction='test')
+    import asyncio
+    with pytest.raises(asyncio.CancelledError):
+        await k._call_model(agent, task, 'System', [], [])
+    assert not cloud.requests
