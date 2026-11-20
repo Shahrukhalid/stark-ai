@@ -383,6 +383,7 @@ test("Vision and Wanda appear alongside the seven specialists", async ({ page })
   await expect(page.getByRole("heading",{name:"VISION",exact:true})).toBeVisible();
   await expect(page.getByRole("heading",{name:"WANDA",exact:true})).toBeVisible();
   await expect(page.getByRole("heading",{name:"ULTRON",exact:true})).toBeVisible();
+});
 
 test("Models shows local setup while keeping OpenRouter available", async ({ page }) => {
   await connect(page);
@@ -409,5 +410,5 @@ test("desktop local setup proceeds without a cloud key", async ({ page }) => {
   await page.getByLabel("Installed model name").fill("qwen3:0.6b");
   await expect(page.getByRole("button",{name:"Next",exact:true})).toBeEnabled();
   await page.getByRole("button",{name:"Next",exact:true}).click();
-  await expect(page.getByText("Connect the accounts STARK OS may post to.",{exact:false})).toBeVisible();
+  await expect(page.getByText("Connect the accounts STARK AI may post to.",{exact:false})).toBeVisible();
 });
