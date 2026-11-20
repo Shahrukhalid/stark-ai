@@ -50,8 +50,17 @@ post being published. Record them in STARK AI with a tester account.
 Set `DEFAULT_CONNECT_URL` in `services/api/stark/config.py` to the STARK Connect address and release. Users can also
 set `STARK_CONNECT_URL` in `.env` (self-hosting) to use their own STARK Connect.
 
+## Mastodon (no app to register)
+
+Mastodon lets every app register itself on the user's own server, so **Sign in with Mastodon** needs no Nexonic app,
+no review and no STARK Connect: STARK AI registers on the server the user types, the browser signs in there and comes
+back to `http://127.0.0.1:<port>/api/oauth/mastodon/callback`. Scopes: `read write:statuses write:media`. PKCE is used
+(Mastodon 4.3+; older servers ignore it). Mastodon tokens don't expire.
+
 ## Notes
 
+- In the desktop app every sign-in opens in the system browser, and STARK AI detects the finished sign-in by itself.
+- STARK Connect refuses to run without a `STATE_KEY` of at least 32 characters.
 - Instagram and Threads tokens last about 60 days; STARK AI renews them about once a week, so they don't expire
   while the app runs at least every few weeks. Pinterest (30 days) is renewed through STARK Connect when the login
   returned a refresh token. LinkedIn tokens can't be renewed by ordinary apps: Account health warns 10 days before

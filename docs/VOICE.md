@@ -26,6 +26,15 @@ professional, gentle, natural) for each assistant, and press **Hear** to listen.
   waits on screen.
 - Nothing is recorded or sent unless you hold the button. Recordings stop by themselves after 60 seconds.
 
+## Offline fallback and the voice check
+
+If Gemini can't answer (no key, no internet, free limit or a timeout), STARK AI still works:
+
+- **Speech to text** runs on your computer when a speech model is downloaded (Video studio → speech models). Nothing leaves the computer on this path.
+- **Replies** are read by the computer's own system voice.
+
+**Settings → STARK voice → Run voice check** shows the microphone and speaker in use, any other microphones, and whether offline speech is ready, then listens for 2 seconds to confirm the microphone hears you. A microphone plugged in after STARK AI started is picked up automatically.
+
 ## Fast mode
 
 Settings → STARK voice → **Fast mode** (desktop app). Hold to talk as usual, but the reply starts almost at once:
