@@ -10,6 +10,7 @@ import array
 import math
 import queue
 import threading
+import time
 from typing import Any
 
 from .gemini import wav_bytes
@@ -32,6 +33,9 @@ class AudioUnavailable(RuntimeError):
     pass
 
 
+RESCAN_EVERY_S = 5.0
+
+
 class Audio:
     def __init__(self, sd: Any = None):
         self._sd = sd
@@ -46,6 +50,7 @@ class Audio:
         # Push-to-talk ordering: every press/release bumps the generation synchronously (in request order), so a
         # start that reaches the microphone after its release was already handled never opens the stream.
         self._gen = 0
+        self._rescanned = float("-inf")
 
     def _module(self):
         if self._sd is None:
@@ -59,15 +64,26 @@ class Audio:
     def _rescan(self, sd: Any) -> None:
         """PortAudio caches the device list at start-up: a microphone plugged in later (or a headset that
         Bluetooth connects after launch) is invisible until it is re-initialised. Done only while idle."""
-        if self._stream is not None or self.playing:
+        # Re-initialising PortAudio while another thread opens a stream can crash it, so this never waits for or races
+        # with start()/stop() (non-blocking lock), and runs at most every few seconds however often the page asks.
+        now = time.monotonic()
+        if self._stream is not None or self.playing or now - self._rescanned < RESCAN_EVERY_S:
             return
-        term, init = getattr(sd, "_terminate", None), getattr(sd, "_initialize", None)
-        if callable(term) and callable(init):
-            try:
-                term()
-                init()
-            except Exception:  # noqa: BLE001 - keep the old list rather than break audio
-                pass
+        if not self._lock.acquire(blocking=False):
+            return
+        try:
+            if self._stream is not None or self.playing:
+                return
+            term, init = getattr(sd, "_terminate", None), getattr(sd, "_initialize", None)
+            if callable(term) and callable(init):
+                try:
+                    term()
+                    init()
+                except Exception:  # noqa: BLE001 - keep the old list rather than break audio
+                    pass
+            self._rescanned = now
+        finally:
+            self._lock.release()
 
     def available(self, rescan: bool = False) -> tuple[bool, str]:
         try:

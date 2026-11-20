@@ -81,6 +81,7 @@ def test_voice_diagnostics_and_offline_fallbacks(voice_client, settings, monkeyp
 
 
 def test_offline_wav_decoding():
+    pytest.importorskip("numpy")  # installed with the optional on-device speech engine
     import io
     import wave
 

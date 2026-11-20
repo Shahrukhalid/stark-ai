@@ -154,6 +154,7 @@ async def mastodon_start(base_url: str, port: int, transport=None) -> str:
         base = "https://" + base
     if not base.startswith("https://"):
         raise OAuthError("The server address must start with https://")
+    base = server_origin(base)
     redirect = redirect_uri(port, "mastodon")
     async with httpx.AsyncClient(timeout=20, transport=transport, follow_redirects=False) as c:
         r = await c.post(f"{base}/api/v1/apps", data={"client_name": "STARK AI", "redirect_uris": redirect,
@@ -172,6 +173,21 @@ async def mastodon_start(base_url: str, port: int, transport=None) -> str:
     q = {"client_id": app["client_id"], "redirect_uri": redirect, "response_type": "code", "scope": MASTODON_SCOPES,
          "state": state, "code_challenge": challenge, "code_challenge_method": "S256"}  # PKCE: Mastodon 4.3+
     return f"{base}/oauth/authorize?{urlencode(q)}"
+
+
+def server_origin(url: str) -> str:
+    """Only scheme, host and port: a pasted profile link or a path/query can't redirect the API calls elsewhere."""
+    from urllib.parse import urlsplit  # noqa: PLC0415
+
+    p = urlsplit(url)
+    if p.scheme != "https" or not p.hostname or p.username or p.password:
+        raise OAuthError("Enter your Mastodon server, for example mastodon.social.")
+    host = p.hostname if ":" not in p.hostname else f"[{p.hostname}]"
+    return f"https://{host}{f':{p.port}' if p.port else ''}"
+
+
+def mastodon_base(state: str) -> str:
+    return PENDING.get(state, {}).get("base", "")
 
 
 def is_mastodon(state: str) -> bool:

@@ -867,6 +867,14 @@ def create_app(settings: Settings | None = None, providers: dict[str, ModelProvi
                 oauth.PENDING.pop(state, None)
                 return page("Sign-in cancelled", f"Nothing was connected ({error or 'no code'}). You can close this tab.", 400)
             try:
+                # The server's address is checked again: its DNS may have changed since sign-in started.
+                from .tools.web import FetchBlocked, check_url
+
+                try:
+                    await check_url(oauth.mastodon_base(state), settings.allow_private_fetch)
+                except FetchBlocked as exc:
+                    oauth.PENDING.pop(state, None)
+                    raise oauth.OAuthError(f"Server address refused: {exc}") from exc
                 base, token = await oauth.mastodon_finish(state, code, _social(k).transport)
                 who = await _social(k).connect_mastodon(base, token)
             except (oauth.OAuthError, social_tools.AdapterError, httpx.HTTPError) as exc:

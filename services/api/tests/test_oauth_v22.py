@@ -108,3 +108,47 @@ def test_desktop_opens_sign_in_in_the_system_browser(client, settings, monkeypat
     settings.desktop = True
     r = client.post("/api/oauth/mastodon/login?open=1", json={"base_url": "mastodon.test"}).json()
     assert r["opened"] is True and opened == [r["auth_url"]]
+
+
+async def test_mastodon_uses_only_the_server_origin():
+    seen: list = []
+    url = urlparse(await oauth.mastodon_start("https://mastodon.test/@someone?x=1#y", 8123, _mastodon(seen)))
+    assert url.netloc == "mastodon.test" and seen[0].url.path == "/api/v1/apps" and seen[0].url.query == b""
+    assert oauth.server_origin("https://m.test:8443/a/b") == "https://m.test:8443"
+    with pytest.raises(oauth.OAuthError):
+        oauth.server_origin("https://user:pw@m.test")
+
+
+def test_mastodon_server_is_checked_again_before_the_token_exchange(client, monkeypatch):
+    r = client.post("/api/oauth/mastodon/login", json={"base_url": "mastodon.test"})
+    state = parse_qs(urlparse(r.json()["auth_url"]).query)["state"][0]
+    from stark.tools import web
+
+    async def rebound(url, allow_private):
+        raise web.FetchBlocked("mastodon.test resolves to a non-public address (SSRF protection)")
+
+    monkeypatch.setattr(web, "check_url", rebound)
+    page = client.get(f"/api/oauth/mastodon/callback?state={state}&code=the-code")
+    assert page.status_code == 400 and "refused" in page.text
+    assert not oauth.is_mastodon(state), "the pending sign-in is dropped"
+
+
+def test_device_rescan_is_throttled_and_never_races_a_recording():
+    from stark.voice import audio as audio_mod
+    from tests.test_voice import FakeSD
+
+    calls: list = []
+    sd = FakeSD
+    old = getattr(sd, "_terminate", None), getattr(sd, "_initialize", None)
+    sd._terminate, sd._initialize = staticmethod(lambda: calls.append("t")), staticmethod(lambda: calls.append("i"))
+    try:
+        a = audio_mod.Audio(sd)
+        a.available(rescan=True)
+        a.available(rescan=True)
+        assert calls == ["t", "i"], "at most one re-initialisation per few seconds"
+        a._rescanned = float("-inf")
+        with a._lock:  # a start()/stop() in progress
+            a.available(rescan=True)
+        assert calls == ["t", "i"], "never re-initialises while the microphone lock is held"
+    finally:
+        sd._terminate, sd._initialize = old
