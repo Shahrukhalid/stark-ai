@@ -1,0 +1,162 @@
+/* ==================================================================================================================
+   STARK 2.2 design system: cinematic dark surfaces, refined glass, restrained neon.
+   Loaded after globals.css, so it layers on top of every screen; the light theme keeps its own values.
+   ================================================================================================================== */
+:root {
+  --color-bg: #05060a;
+  --color-panel: #0b0d14;
+  --color-panel-2: #11141d;
+  --color-line: rgba(148, 163, 184, 0.12);
+  --color-line-strong: rgba(148, 163, 184, 0.24);
+  --color-ink: #e6ebf2;
+  --color-mute: #8a94a6;
+  --font-sans: "STARK Urdu", "Inter var", "Inter", ui-sans-serif, system-ui, -apple-system, "SF Pro Text", "Segoe UI Variable Text", "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-display: "STARK Urdu", "Inter Display", "SF Pro Display", "Segoe UI Variable Display", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+:root {
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-spring: cubic-bezier(0.34, 1.4, 0.64, 1);
+  --radius-panel: 16px;
+  --radius-control: 10px;
+  --accent-a: #22d3ee;
+  --accent-b: #8b5cf6;
+  --accent-grad: linear-gradient(135deg, var(--accent-a) 0%, #60a5fa 45%, var(--accent-b) 100%);
+  --glass: linear-gradient(180deg, rgba(22, 26, 38, 0.72) 0%, rgba(12, 14, 21, 0.78) 100%);
+  --glass-hi: inset 0 1px 0 rgba(255, 255, 255, 0.06), inset 0 0 0 1px rgba(255, 255, 255, 0.02);
+  --shadow-panel: 0 1px 2px rgba(0, 0, 0, 0.4), 0 12px 32px -12px rgba(0, 0, 0, 0.6);
+  --shadow-lift: 0 2px 4px rgba(0, 0, 0, 0.45), 0 24px 48px -16px rgba(0, 0, 0, 0.7), 0 0 0 1px rgba(34, 211, 238, 0.08);
+}
+
+body {
+  font-feature-settings: "cv11", "ss01", "ss03";
+  text-rendering: optimizeLegibility;
+  letter-spacing: -0.005em;
+  background-image:
+    radial-gradient(1400px 700px at 85% -20%, rgba(56, 189, 248, 0.10), transparent 60%),
+    radial-gradient(1000px 600px at -10% 120%, rgba(139, 92, 246, 0.09), transparent 60%),
+    radial-gradient(600px 400px at 50% 50%, rgba(255, 255, 255, 0.012), transparent 70%);
+}
+h1, h2, h3, .font-display { font-family: var(--font-display); letter-spacing: -0.02em; }
+
+/* Surfaces and controls sit in the components layer, so Tailwind utilities on an element still win. */
+@layer components {
+.panel {
+  background: var(--glass);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-panel);
+  box-shadow: var(--glass-hi), var(--shadow-panel);
+  backdrop-filter: blur(18px) saturate(140%);
+  -webkit-backdrop-filter: blur(18px) saturate(140%);
+  transition: border-color 0.3s var(--ease-out), box-shadow 0.3s var(--ease-out), transform 0.3s var(--ease-out);
+}
+.panel-title {
+  font-family: var(--font-display); font-size: 12px; font-weight: 600; letter-spacing: 0.02em; text-transform: none;
+  color: var(--color-ink); opacity: 0.86;
+}
+.hud-label { font-family: var(--font-sans); font-size: 11px; font-weight: 600; letter-spacing: 0.06em; }
+.grid-bg {
+  background-image:
+    radial-gradient(rgba(148, 163, 184, 0.09) 1px, transparent 1px);
+  background-size: 22px 22px;
+  background-position: -11px -11px;
+}
+
+.btn {
+  border-radius: var(--radius-control);
+  padding: 7px 13px;
+  font-weight: 500;
+  border-color: var(--color-line-strong);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0.02));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 1px 2px rgba(0, 0, 0, 0.35);
+  transition: background 0.2s var(--ease-out), border-color 0.2s, box-shadow 0.2s, transform 0.12s var(--ease-out), opacity 0.2s;
+  -webkit-tap-highlight-color: transparent;
+}
+.btn:hover:not(:disabled) { background: linear-gradient(180deg, rgba(255, 255, 255, 0.09), rgba(255, 255, 255, 0.035)); border-color: rgba(148, 163, 184, 0.4); }
+.btn:active:not(:disabled) { transform: translateY(0.5px) scale(0.985); }
+.btn-primary {
+  color: #04121a; border-color: transparent; font-weight: 600;
+  background: var(--accent-grad);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.35), 0 6px 20px -6px rgba(56, 189, 248, 0.55), 0 1px 2px rgba(0, 0, 0, 0.4);
+}
+.btn-primary:hover:not(:disabled) {
+  background: var(--accent-grad); filter: brightness(1.08) saturate(1.05); border-color: transparent;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.4), 0 10px 28px -8px rgba(139, 92, 246, 0.6), 0 1px 2px rgba(0, 0, 0, 0.4);
+}
+.btn-danger { background: linear-gradient(180deg, rgba(248, 113, 113, 0.16), rgba(248, 113, 113, 0.06)); }
+.input {
+  border-radius: var(--radius-control);
+  border-color: var(--color-line-strong);
+  background: rgba(4, 6, 10, 0.6);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.35);
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+.input:hover { border-color: rgba(148, 163, 184, 0.36); }
+.input:focus { border-color: var(--accent-a); box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.35), 0 0 0 4px rgba(34, 211, 238, 0.14); }
+.chip { border-color: var(--color-line-strong); background: rgba(255, 255, 255, 0.03); font-weight: 500; letter-spacing: 0.01em; }
+
+}
+
+/* the old HUD corner brackets are replaced by a single hairline of light along the top edge */
+.panel::after { display: none; }
+.panel::before {
+  inset: 0 18% auto 18%; top: -1px; left: 18%; width: auto; height: 1px; border: 0; border-radius: 0; opacity: 0.55;
+  background: linear-gradient(90deg, transparent, rgba(125, 211, 252, 0.55), rgba(167, 139, 250, 0.45), transparent);
+}
+.panel:hover { border-color: var(--color-line-strong); box-shadow: var(--glass-hi), var(--shadow-lift); }
+.panel:hover::before { opacity: 0.9; }
+:focus-visible { outline: 2px solid transparent; box-shadow: 0 0 0 2px var(--color-bg), 0 0 0 4px var(--accent-a); border-radius: 8px; }
+.holo-text { background-image: var(--accent-grad); }
+
+/* Navigation ---------------------------------------------------------------------------------------------------- */
+.app-sidebar {
+  background: linear-gradient(180deg, rgba(12, 14, 21, 0.72), rgba(8, 9, 14, 0.72));
+  backdrop-filter: blur(20px) saturate(140%);
+  -webkit-backdrop-filter: blur(20px) saturate(140%);
+}
+.nav-group { font-size: 10.5px; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; color: var(--color-mute); opacity: 0.7; }
+.nav-item { transition: background 0.2s var(--ease-out), color 0.2s, transform 0.2s var(--ease-out); }
+.nav-item:hover { transform: translateX(1px); }
+.nav-item[aria-current="page"] {
+  color: var(--color-ink) !important;
+  background: linear-gradient(90deg, rgba(34, 211, 238, 0.14), rgba(139, 92, 246, 0.06) 70%, transparent) !important;
+  box-shadow: inset 0 0 0 1px rgba(125, 211, 252, 0.16) !important;
+}
+.nav-item[aria-current="page"] svg { color: var(--accent-a); filter: drop-shadow(0 0 6px rgba(34, 211, 238, 0.55)); }
+.nav-item[aria-current="page"]::before { left: 0; width: 2px; background: var(--accent-grad); box-shadow: 0 0 10px rgba(34, 211, 238, 0.8); }
+.app-header {
+  background: linear-gradient(180deg, rgba(8, 9, 14, 0.82), rgba(8, 9, 14, 0.62));
+  backdrop-filter: blur(20px) saturate(150%);
+  -webkit-backdrop-filter: blur(20px) saturate(150%);
+}
+.brand-mark { box-shadow: 0 0 0 1px rgba(125, 211, 252, 0.25), 0 0 24px -4px rgba(34, 211, 238, 0.6); }
+
+/* Feedback, charts, agents ------------------------------------------------------------------------------------- */
+.toast { animation: stark-toast-in 0.4s var(--ease-spring) both; }
+@keyframes stark-toast-in { from { opacity: 0; transform: translateY(12px) scale(0.97); } to { opacity: 1; transform: none; } }
+.chart-grid line { stroke: rgba(148, 163, 184, 0.12); }
+.chart-area { filter: drop-shadow(0 6px 18px rgba(56, 189, 248, 0.25)); }
+.skeleton { background: linear-gradient(90deg, rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.03)); background-size: 200% 100%; animation: stark-shimmer 1.4s linear infinite; border-radius: 8px; }
+.view-enter { animation-duration: 0.5s; animation-timing-function: var(--ease-out); }
+.stat-glow { font-family: var(--font-display); font-variant-numeric: tabular-nums; letter-spacing: -0.03em; }
+
+@media (prefers-reduced-motion: reduce) {
+  .toast, .skeleton { animation: none !important; }
+  .btn, .nav-item, .panel { transition: none !important; }
+  .btn:active:not(:disabled), .nav-item:hover { transform: none; }
+}
+html[data-fx="off"] .toast, html[data-fx="off"] .skeleton { animation: none !important; }
+
+/* Light theme keeps the same structure with daylight surfaces. */
+html[data-theme="light"] { --glass: linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(250, 251, 253, 0.92)); --glass-hi: inset 0 1px 0 rgba(255, 255, 255, 0.9); --shadow-panel: 0 1px 2px rgba(15, 23, 42, 0.06), 0 8px 24px -12px rgba(15, 23, 42, 0.12); --shadow-lift: 0 2px 4px rgba(15, 23, 42, 0.06), 0 16px 32px -12px rgba(15, 23, 42, 0.18); --accent-a: #0e7490; --accent-b: #6d28d9; }
+html[data-theme="light"] .panel { background: var(--glass); }
+html[data-theme="light"] .btn { background: linear-gradient(180deg, #ffffff, #f6f8fb); box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08); }
+html[data-theme="light"] .btn-primary { color: #ffffff; background: linear-gradient(135deg, #0e7490, #4f46e5); }
+html[data-theme="light"] .input { background: #ffffff; box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.05); }
+html[data-theme="light"] .app-sidebar, html[data-theme="light"] .app-header { background: rgba(255, 255, 255, 0.82); }
+html[data-theme="light"] .grid-bg { background-image: radial-gradient(rgba(15, 23, 42, 0.07) 1px, transparent 1px); }
+html[data-theme="light"] .nav-item[aria-current="page"] { background: linear-gradient(90deg, rgba(14, 116, 144, 0.1), transparent) !important; box-shadow: inset 0 0 0 1px rgba(14, 116, 144, 0.2) !important; }
+html[data-theme="light"] .panel::before { background: linear-gradient(90deg, transparent, rgba(14, 116, 144, 0.35), transparent); }
+@media (prefers-contrast: more) {
+  .panel, .btn, .input, .chip { border-color: var(--color-ink); }
+  .panel { backdrop-filter: none; }
+}
