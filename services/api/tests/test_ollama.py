@@ -25,7 +25,7 @@ async def test_local_chat_and_tool_response():
 
 async def test_remote_model_and_redirect_refused():
     for status, data in [(200, {'remote_host': 'ollama.com'}), (302, {})]:
-        p = OllamaProvider('http://127.0.0.1:11434', transport=httpx.MockTransport(lambda r: httpx.Response(status, json=data, headers={'location': 'https://ollama.com'})))
+        p = OllamaProvider('http://127.0.0.1:11434', transport=httpx.MockTransport(lambda r, status=status, data=data: httpx.Response(status, json=data, headers={'location': 'https://ollama.com'})))
         with pytest.raises(ProviderError):
             await p.inspect_model('model:latest')
 

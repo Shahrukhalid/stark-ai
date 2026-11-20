@@ -1,5 +1,4 @@
 import asyncio
-import json
 import httpx
 import pytest
 from fastapi.testclient import TestClient
@@ -9,7 +8,8 @@ from stark.providers.ollama import OllamaProvider
 
 @pytest.mark.parametrize('name', ['https://evil.test/model', 'evil.test/model', '../escape', 'foo:cloud', 'user/model/extra'])
 def test_download_names_are_not_remote_addresses(name):
-    with pytest.raises(ValueError): model_name(name)
+    with pytest.raises(ValueError):
+        model_name(name)
 
 
 def provider(handler):
@@ -49,7 +49,8 @@ async def test_no_license_approval_and_incomplete_stream(settings):
     from fastapi import HTTPException
     p = provider(lambda r: httpx.Response(200, content=b'{"status":"pulling"}\n'))
     service = LocalModels(build_kernel(settings, {'ollama':p}))
-    with pytest.raises(HTTPException): service.start(Pull(model='test'))
+    with pytest.raises(HTTPException):
+        service.start(Pull(model='test'))
     job = service.start(Pull(model='test', license_reviewed=True))
     await service.tasks[job['id']]
     assert service.jobs[job['id']]['status'] == 'failed'

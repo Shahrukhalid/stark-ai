@@ -12,7 +12,6 @@ import socket
 import subprocess
 import sys
 import tempfile
-import time
 
 from stark.config import REPO_ROOT, Settings
 from stark.local_models import LocalModels, Pull
