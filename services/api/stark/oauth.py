@@ -137,3 +137,71 @@ def take_pick(platform: str, token: str, choice: str) -> dict[str, str]:
     if not opt:
         raise OAuthError("Unknown choice.")
     return opt
+
+
+# ---------------------------------------------------------------- Mastodon (any server, no developer app needed)
+# Mastodon lets every client register itself on the user's server (POST /api/v1/apps), so "Log in with Mastodon"
+# needs no Nexonic app and no review: STARK registers on the chosen server, the browser signs in there, and the
+# server sends it back to this computer. Mastodon access tokens do not expire.
+MASTODON_SCOPES = "read write:statuses write:media"
+
+
+async def mastodon_start(base_url: str, port: int, transport=None) -> str:
+    base = base_url.strip().rstrip("/")
+    if not base:
+        raise OAuthError("Enter your Mastodon server, for example mastodon.social.")
+    if "://" not in base:
+        base = "https://" + base
+    if not base.startswith("https://"):
+        raise OAuthError("The server address must start with https://")
+    redirect = redirect_uri(port, "mastodon")
+    async with httpx.AsyncClient(timeout=20, transport=transport, follow_redirects=False) as c:
+        r = await c.post(f"{base}/api/v1/apps", data={"client_name": "STARK AI", "redirect_uris": redirect,
+                                                      "scopes": MASTODON_SCOPES})
+    app = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
+    if r.status_code != 200 or not app.get("client_id") or not app.get("client_secret"):
+        raise OAuthError(f"That server did not accept STARK AI ({r.status_code}). Check the address.")
+    now = time.time()
+    for k in [k for k, v in PENDING.items() if v["created"] < now - TTL_S]:
+        PENDING.pop(k, None)
+    verifier = secrets.token_urlsafe(64)
+    challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
+    state = secrets.token_urlsafe(24)
+    PENDING[state] = {"platform": "mastodon", "base": base, "client_id": app["client_id"],
+                      "client_secret": app["client_secret"], "verifier": verifier, "redirect": redirect, "created": now}
+    q = {"client_id": app["client_id"], "redirect_uri": redirect, "response_type": "code", "scope": MASTODON_SCOPES,
+         "state": state, "code_challenge": challenge, "code_challenge_method": "S256"}  # PKCE: Mastodon 4.3+
+    return f"{base}/oauth/authorize?{urlencode(q)}"
+
+
+def is_mastodon(state: str) -> bool:
+    return PENDING.get(state, {}).get("platform") == "mastodon"
+
+
+async def mastodon_finish(state: str, code: str, transport=None) -> tuple[str, str]:
+    """Returns (server, access token)."""
+    pending = PENDING.pop(state, None)
+    if not pending or pending["platform"] != "mastodon" or pending["created"] < time.time() - TTL_S:
+        raise OAuthError("This sign-in link expired or was already used. Start again from Your accounts.")
+    body = {"grant_type": "authorization_code", "code": code, "client_id": pending["client_id"],
+            "client_secret": pending["client_secret"], "redirect_uri": pending["redirect"],
+            "code_verifier": pending["verifier"], "scope": MASTODON_SCOPES}
+    async with httpx.AsyncClient(timeout=30, transport=transport, follow_redirects=False) as c:
+        r = await c.post(f"{pending['base']}/oauth/token", data=body)
+    data = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
+    if r.status_code != 200 or not data.get("access_token"):
+        raise OAuthError(f"Mastodon did not return a token ({data.get('error') or r.status_code}).")
+    return pending["base"], data["access_token"]
+
+
+def open_in_system_browser(url: str) -> bool:
+    """Desktop app only: sign-in happens in the user's normal browser (saved passwords, passkeys, 2FA apps),
+    never inside the app window. Only https sign-in pages are opened."""
+    if not url.startswith("https://"):
+        return False
+    import webbrowser  # noqa: PLC0415
+
+    try:
+        return bool(webbrowser.open(url, new=2))
+    except Exception:  # noqa: BLE001 - no browser registered: the page shows the link instead
+        return False
