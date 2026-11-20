@@ -13,12 +13,14 @@ jobs:
   compose:
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    env:
-      COMPOSE: docker compose -f docker-compose.yml -f docker-compose.prod.yml
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Create .env
-        run: python3 scripts/setup.py < /dev/null > /dev/null
+        # As the docs say for Linux: the container user matches the owner of the bind-mounted ./sandbox
+        run: |
+          python3 scripts/setup.py < /dev/null > /dev/null
+          # UID is read-only in bash, so it is passed to compose through env(1)
+          echo "COMPOSE=env UID=$(id -u) docker compose -f docker-compose.yml -f docker-compose.prod.yml" >> "$GITHUB_ENV"
       - name: Build and start
         run: $COMPOSE up -d --build --wait --wait-timeout 300
       - name: Both services answer
