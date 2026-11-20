@@ -50,3 +50,20 @@ test("approved extra scopes are added from variables, anything odd is ignored", 
   assert.equal(scopes({ TIKTOK_EXTRA_SCOPES: "video.list" }, "tiktok"), "user.info.basic,video.upload,video.publish,video.list");
   assert.equal(scopes({ LINKEDIN_EXTRA_SCOPES: "r_member_social &x=1" }, "linkedin"), "openid profile w_member_social r_member_social");
 });
+
+test("refuses to run without a real STATE_KEY and compares signatures safely", async () => {
+  const { safeEqual } = await import("./worker.js");
+  assert.equal(safeEqual("abc", "abc"), true);
+  assert.equal(safeEqual("abc", "abd"), false);
+  assert.equal(safeEqual("abc", "abcd"), false);
+  assert.equal(safeEqual(undefined, ""), true);
+  for (const key of [undefined, "short"]) {
+    const r = await worker.fetch(
+      new Request("https://connect.test/start/tiktok?return=http://127.0.0.1:8000/api/oauth/tiktok/callback&state=s"),
+      { ...env, STATE_KEY: key },
+    );
+    assert.equal(r.status, 503);
+  }
+  const bad = await worker.fetch(new Request("https://connect.test/cb/tiktok?state=%21%21.x&code=c"), env);
+  assert.equal(bad.status, 400);
+});

@@ -37,32 +37,36 @@ import { AgentGlyph } from "./ui";
 
 export type View = "home" | "live" | "calendar" | "analytics" | "listening" | "studio" | "library" | "automations" | "brands" | "compose" | "growth" | "command" | "content" | "autopilot" | "team" | "tasks" | "approvals" | "memory" | "models" | "tools" | "diagnostics" | "usage" | "activity" | "settings";
 
-const NAV: { id: View; label: string; icon: React.ElementType }[] = [
-  { id: "home", label: "Start", icon: Home },
-  { id: "live", label: "Live", icon: Radar },
-  { id: "command", label: "Command", icon: MessageSquare },
-  { id: "compose", label: "Compose", icon: PenLine },
-  { id: "content", label: "Content", icon: CalendarClock },
-  { id: "calendar", label: "Calendar", icon: CalendarDays },
-  { id: "analytics", label: "Analytics", icon: BarChart3 },
-  { id: "growth", label: "Growth", icon: TrendingUp },
-  { id: "listening", label: "Listening", icon: Ear },
-  { id: "studio", label: "Studio", icon: WandSparkles },
-  { id: "library", label: "Library", icon: Library },
-  { id: "brands", label: "Brands", icon: Tag },
-  { id: "automations", label: "Automations", icon: Workflow },
-  { id: "autopilot", label: "Autopilot", icon: Rocket },
-  { id: "team", label: "Agents", icon: Users },
-  { id: "tasks", label: "Tasks", icon: Network },
-  { id: "approvals", label: "Approvals", icon: ShieldCheck },
-  { id: "memory", label: "Memory", icon: Brain },
-  { id: "models", label: "Models", icon: Cpu },
-  { id: "tools", label: "Tools", icon: Wrench },
-  { id: "diagnostics", label: "Diagnostics", icon: Activity },
-  { id: "usage", label: "Usage", icon: Gauge },
-  { id: "activity", label: "Activity", icon: ScrollText },
-  { id: "settings", label: "Settings", icon: Settings },
+type NavItem = { id: View; label: string; icon: React.ElementType; group: string };
+
+/** Grouped so 24 screens stay findable at a glance; the order inside each group is the order people use them. */
+const NAV: NavItem[] = [
+  { id: "home", label: "Start", icon: Home, group: "Overview" },
+  { id: "live", label: "Live", icon: Radar, group: "Overview" },
+  { id: "command", label: "Command", icon: MessageSquare, group: "Overview" },
+  { id: "compose", label: "Compose", icon: PenLine, group: "Create" },
+  { id: "content", label: "Content", icon: CalendarClock, group: "Create" },
+  { id: "calendar", label: "Calendar", icon: CalendarDays, group: "Create" },
+  { id: "studio", label: "Studio", icon: WandSparkles, group: "Create" },
+  { id: "library", label: "Library", icon: Library, group: "Create" },
+  { id: "brands", label: "Brands", icon: Tag, group: "Create" },
+  { id: "analytics", label: "Analytics", icon: BarChart3, group: "Grow" },
+  { id: "growth", label: "Growth", icon: TrendingUp, group: "Grow" },
+  { id: "listening", label: "Listening", icon: Ear, group: "Grow" },
+  { id: "automations", label: "Automations", icon: Workflow, group: "Automate" },
+  { id: "autopilot", label: "Autopilot", icon: Rocket, group: "Automate" },
+  { id: "team", label: "Agents", icon: Users, group: "Team" },
+  { id: "tasks", label: "Tasks", icon: Network, group: "Team" },
+  { id: "approvals", label: "Approvals", icon: ShieldCheck, group: "Team" },
+  { id: "memory", label: "Memory", icon: Brain, group: "Team" },
+  { id: "models", label: "Models", icon: Cpu, group: "System" },
+  { id: "tools", label: "Tools", icon: Wrench, group: "System" },
+  { id: "diagnostics", label: "Diagnostics", icon: Activity, group: "System" },
+  { id: "usage", label: "Usage", icon: Gauge, group: "System" },
+  { id: "activity", label: "Activity", icon: ScrollText, group: "System" },
+  { id: "settings", label: "Settings", icon: Settings, group: "System" },
 ];
+const GROUPS = Array.from(new Set(NAV.map((n) => n.group)));
 
 const MODES = [
   { id: "observe", label: "Observe" },
@@ -157,9 +161,9 @@ export function Shell({ onSignOut }: { onSignOut: () => void }) {
     <>
     {fx === "max" && <ParticleField activity={activity} />}
     <div className="relative z-[1] flex min-h-screen flex-col">
-      <header className="sticky top-0 z-30 flex flex-wrap items-center gap-3 border-b border-[var(--color-line)] bg-[color-mix(in_srgb,var(--color-bg)_80%,transparent)] px-4 py-2.5 backdrop-blur">
+      <header className="app-header sticky top-0 z-30 flex flex-wrap items-center gap-3 border-b border-[var(--color-line)] px-4 py-2.5">
         <div className="flex items-center gap-2.5">
-          <span className="relative inline-flex h-[30px] w-[30px] items-center justify-center">
+          <span className="brand-mark relative inline-flex h-[30px] w-[30px] items-center justify-center rounded-full bg-black/40">
             <svg viewBox="0 0 30 30" className="absolute inset-0" aria-hidden>
               <circle cx="15" cy="15" r="14" fill="none" stroke="#a78bfa" strokeOpacity={0.7} strokeDasharray="6 4 1 4" className="orbit" />
               <circle cx="15" cy="15" r="11.5" fill="none" stroke="#f472b6" strokeOpacity={0.5} strokeDasharray="2 5" className="orbit-rev" />
@@ -167,8 +171,8 @@ export function Shell({ onSignOut }: { onSignOut: () => void }) {
             <AgentGlyph icon="core" color="#22d3ee" size={20} active={activity > 0} />
           </span>
           <div className="leading-tight">
-            <div className="holo-text text-sm font-semibold tracking-[0.3em]">STARK AI</div>
-            <div className="hud-label text-[var(--color-mute)]">Project Genesis</div>
+            <div className="holo-text font-display text-[13px] font-semibold tracking-[0.24em]">STARK AI</div>
+            <div className="text-[11px] text-[var(--color-mute)]">Project Genesis</div>
           </div>
         </div>
         <div className="ml-2 flex items-center gap-2 text-xs text-[var(--color-mute)]">
@@ -229,25 +233,30 @@ export function Shell({ onSignOut }: { onSignOut: () => void }) {
       {error && <div className="border-b border-red-400/30 bg-red-400/10 px-4 py-1.5 text-center text-xs text-red-200">API error: {error}</div>}
 
       <div className="flex flex-1 flex-col md:flex-row">
-        <nav className="flex gap-1 overflow-x-auto border-b border-[var(--color-line)] p-2 md:w-52 md:flex-col md:border-b-0 md:border-r md:p-3">
-          {NAV.map((n) => {
-            const Icon = n.icon;
-            const badge = n.id === "approvals" ? approvals.length : 0;
-            return (
-              <button
-                key={n.id}
-                onClick={() => setView(n.id)}
-                aria-current={view === n.id ? "page" : undefined}
-                className={`nav-item flex shrink-0 items-center gap-2.5 rounded-lg px-3 py-2 text-sm transition ${
-                  view === n.id ? "bg-cyan-400/10 text-cyan-200 ring-1 ring-cyan-400/30" : "text-[var(--color-mute)] hover:bg-white/5 hover:text-[var(--color-ink)]"
-                }`}
-              >
-                <Icon size={16} />
-                <span>{n.label}</span>
-                {badge > 0 && <span className="ml-auto rounded-full bg-amber-400 px-1.5 text-[11px] font-bold text-black">{badge}</span>}
-              </button>
-            );
-          })}
+        <nav aria-label="Main" className="app-sidebar flex gap-1 overflow-x-auto border-b border-[var(--color-line)] p-2 md:sticky md:top-[53px] md:h-[calc(100vh-53px)] md:w-56 md:flex-col md:overflow-y-auto md:border-b-0 md:border-r md:p-3">
+          {GROUPS.map((g) => (
+            <div key={g} role="group" aria-label={g} className="flex shrink-0 gap-1 md:mb-3 md:flex-col">
+              <div className="nav-group hidden px-3 pb-1 pt-1 md:block" aria-hidden>{g}</div>
+              {NAV.filter((n) => n.group === g).map((n) => {
+                const Icon = n.icon;
+                const badge = n.id === "approvals" ? approvals.length : 0;
+                return (
+                  <button
+                    key={n.id}
+                    onClick={() => setView(n.id)}
+                    aria-current={view === n.id ? "page" : undefined}
+                    className={`nav-item flex shrink-0 items-center gap-2.5 rounded-[10px] px-3 py-[7px] text-[13px] font-medium ${
+                      view === n.id ? "text-[var(--color-ink)]" : "text-[var(--color-mute)] hover:bg-white/[0.04] hover:text-[var(--color-ink)]"
+                    }`}
+                  >
+                    <Icon size={16} strokeWidth={1.75} aria-hidden />
+                    <span>{n.label}</span>
+                    {badge > 0 && <span className="ml-auto rounded-full bg-amber-400 px-1.5 text-[11px] font-bold text-black" aria-label={`${badge} waiting`}>{badge}</span>}
+                  </button>
+                );
+              })}
+            </div>
+          ))}
         </nav>
         <main className="grid-bg relative min-w-0 flex-1 p-3 md:p-5">
           {fx === "max" && <BootOverlay label={NAV.find((n) => n.id === view)?.label || view} run={boot} />}
@@ -285,7 +294,7 @@ export function Shell({ onSignOut }: { onSignOut: () => void }) {
           <div
             key={t.id}
             role={t.kind === "error" ? "alert" : "status"}
-            className={`panel flex items-start gap-2 p-3 text-sm ${
+            className={`panel toast flex items-start gap-2 p-3 text-sm ${
               t.kind === "error" ? "!border-red-400/50" : t.kind === "warn" ? "!border-amber-300/50" : t.kind === "success" ? "!border-emerald-400/50" : ""
             }`}
           >

@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from "next";
 import "./globals.css";
+import "./design.css";
 import { ThemeSync } from "@/components/ThemeSync";
 
 // Runs before first paint so the saved theme applies on every screen without a dark flash.

@@ -328,13 +328,17 @@ const HELP: Record<string, { steps: string[]; link: string }> = {
   },
   mastodon: {
     steps: [
-      "On your Mastodon server, open Preferences → Development → New application.",
-      "Name it “STARK AI”, keep only the read and write:statuses scopes, and save.",
-      "Open the app you created and copy “Your access token”.",
+      "Type your Mastodon server (for example mastodon.social) and press Sign in with Mastodon: your browser opens, you allow STARK AI, and it connects by itself.",
+      "Prefer a token? Preferences → Development → New application (read, write:statuses, write:media), then paste “Your access token”.",
     ],
     link: "",
   },
 };
+
+/** Opens a sign-in page in a separate browser tab (the desktop app opens the system browser on the engine side). */
+function openSignIn(url: string) {
+  if (/^https:\/\//.test(url)) window.open(url, "_blank", "noopener,noreferrer");
+}
 
 function AccountsPanel({ accounts, onChange }: { accounts: SocialAccount[]; onChange: (a: SocialAccount[]) => void }) {
   const { client, notify } = useStark();
@@ -348,10 +352,11 @@ function AccountsPanel({ accounts, onChange }: { accounts: SocialAccount[]; onCh
   async function login(platform: string) {
     setBusy(true);
     try {
-      const res = await client.post<{ auth_url: string }>(`/api/oauth/${platform}/login`, {});
+      const res = await client.post<{ auth_url: string; opened?: boolean }>(`/api/oauth/${platform}/login?open=1`, {});
       setAuthUrl(res.auth_url);
       setWaiting(platform);
       setOpen(platform);
+      if (!res.opened) openSignIn(res.auth_url);
     } catch (e: unknown) {
       notify("error", errorText(e, "Could not start the log in."));
     } finally {
@@ -376,6 +381,38 @@ function AccountsPanel({ accounts, onChange }: { accounts: SocialAccount[]; onCh
   }
   const [busy, setBusy] = useState(false);
   const live = accounts.filter((a) => a.can_connect);
+
+  // Automatic callback: while a sign-in is open, watch for the account to appear (every 2 s, up to 15 min),
+  // so nobody has to come back and press "I've logged in".
+  useEffect(() => {
+    if (!waiting) return;
+    let stop = false;
+    const until = Date.now() + 15 * 60 * 1000;
+    const tick = async () => {
+      if (stop || Date.now() > until) return;
+      try {
+        const res = await client.get<{ accounts: SocialAccount[] }>("/api/social/accounts");
+        const acc = res.accounts.find((x) => x.platform === waiting);
+        if (!stop && acc?.mode === "connected") {
+          onChange(res.accounts);
+          notify("success", `Connected as ${acc.connected_as}`);
+          setWaiting(null);
+          setOpen(null);
+          setVals({});
+          setForm({ a: "", b: "" });
+          return;
+        }
+      } catch {
+        /* engine restarting: keep waiting */
+      }
+      if (!stop) timer = setTimeout(tick, 2000);
+    };
+    let timer = setTimeout(tick, 2000);
+    return () => {
+      stop = true;
+      clearTimeout(timer);
+    };
+  }, [client, notify, onChange, waiting]);
   const others = accounts.filter((a) => !a.can_connect);
 
   async function connect(platform: string) {
@@ -383,9 +420,18 @@ function AccountsPanel({ accounts, onChange }: { accounts: SocialAccount[]; onCh
     try {
       const acc = accounts.find((x) => x.platform === platform);
       if (acc?.form?.oauth) {
-        const res = await client.post<{ auth_url: string }>(`/api/oauth/${platform}/start`, { values: vals });
+        const res = await client.post<{ auth_url: string; opened?: boolean }>(`/api/oauth/${platform}/start?open=1`, { values: vals });
         setAuthUrl(res.auth_url);
         setWaiting(platform);
+        if (!res.opened) openSignIn(res.auth_url);
+        return;
+      }
+      if (platform === "mastodon" && !form.b) {
+        // One-click: STARK registers itself on the user's server; no token to copy.
+        const res = await client.post<{ auth_url: string; opened?: boolean }>(`/api/oauth/mastodon/login?open=1`, { base_url: form.a });
+        setAuthUrl(res.auth_url);
+        setWaiting(platform);
+        if (!res.opened) openSignIn(res.auth_url);
         return;
       }
       const body =
@@ -440,7 +486,7 @@ function AccountsPanel({ accounts, onChange }: { accounts: SocialAccount[]; onCh
               </div>
             ) : open === a.platform && a.login && waiting === a.platform && !manual ? (
               <div className="mt-2 space-y-2 text-xs text-[var(--color-mute)]">
-                <p>Log in to {a.name} in your browser and allow STARK AI. Then come back here.</p>
+                <p className="flex items-center gap-2"><span className="h-1.5 w-1.5 rounded-full bg-cyan-300 anim-pulse" aria-hidden />Finish logging in to {a.name} in your browser. STARK AI connects automatically when you&apos;re done.</p>
                 <div className="flex flex-wrap gap-2">
                   <a className="btn btn-primary" href={authUrl} target="_blank" rel="noreferrer noopener">
                     <ExternalLink size={13} /> Open {a.name} log in
@@ -515,15 +561,20 @@ function AccountsPanel({ accounts, onChange }: { accounts: SocialAccount[]; onCh
                   className="input font-mono"
                   type="password"
                   aria-label={a.platform === "bluesky" ? "Bluesky app password" : "Mastodon access token"}
-                  placeholder={a.platform === "bluesky" ? "app password: xxxx-xxxx-xxxx-xxxx" : "access token"}
+                  placeholder={a.platform === "bluesky" ? "app password: xxxx-xxxx-xxxx-xxxx" : "access token (optional: leave empty to sign in instead)"}
                   value={form.b}
                   onChange={(e) => setForm({ ...form, b: e.target.value })}
                   autoComplete="off"
                 />
                 <div className="flex gap-2">
-                  <button className="btn btn-primary" disabled={busy || !form.a || !form.b}>
-                    <Link2 size={14} /> {busy ? "Checking…" : "Connect"}
+                  <button className="btn btn-primary" disabled={busy || !form.a || (a.platform !== "mastodon" && !form.b)}>
+                    <Link2 size={14} /> {busy ? "Checking…" : a.platform === "mastodon" && !form.b ? "Sign in with Mastodon" : "Connect"}
                   </button>
+                  {waiting === a.platform && authUrl && (
+                    <a className="btn" href={authUrl} target="_blank" rel="noreferrer noopener">
+                      <ExternalLink size={13} /> Open sign-in page
+                    </a>
+                  )}
                   <button type="button" className="btn" onClick={() => setOpen(null)}>Cancel</button>
                 </div>
               </form>

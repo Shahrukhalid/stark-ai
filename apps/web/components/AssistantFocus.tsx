@@ -35,13 +35,13 @@ export function AssistantFocus({
   useEffect(() => {
     const down = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
-      if (e.code === "Space" && !e.repeat && !(e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement)) {
+      if (e.code === "Space" && !e.repeat && !typing(e.target)) {
         e.preventDefault();
         onTalkStart();
       }
     };
     const up = (e: KeyboardEvent) => {
-      if (e.code === "Space") {
+      if (e.code === "Space" && !typing(e.target)) {
         e.preventDefault();
         onTalkStop();
       }
@@ -79,11 +79,15 @@ export function AssistantFocus({
         type="button"
         className="flex h-20 w-20 items-center justify-center rounded-full border-2 transition"
         style={{ borderColor: color, background: listening ? `${color}33` : "transparent", boxShadow: listening ? `0 0 40px ${color}66` : "none" }}
-        onMouseDown={onTalkStart}
-        onMouseUp={onTalkStop}
-        onMouseLeave={() => listening && onTalkStop()}
-        onTouchStart={onTalkStart}
-        onTouchEnd={onTalkStop}
+        onPointerDown={(e) => {
+          if (e.button !== 0) return;
+          e.currentTarget.setPointerCapture?.(e.pointerId);
+          onTalkStart();
+        }}
+        onPointerUp={onTalkStop}
+        onPointerCancel={onTalkStop}
+        onLostPointerCapture={onTalkStop}
+        onContextMenu={(e) => e.preventDefault()}
         aria-pressed={listening}
         aria-label="Hold to talk"
       >
@@ -93,4 +97,8 @@ export function AssistantFocus({
     </div>,
     document.body,
   );
+}
+
+function typing(t: EventTarget | null): boolean {
+  return t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement || t instanceof HTMLSelectElement || (t instanceof HTMLElement && t.isContentEditable);
 }

@@ -6,7 +6,7 @@ import { detectWake, parseAddress } from "@/lib/addressing";
 import { useStark } from "@/lib/store";
 import type { Agent, Task, Turn } from "@/lib/types";
 import { Markdown } from "./Markdown";
-import { createRecognizer, isSpeaking, isUrdu, speak, stopSpeaking, sttSupported, ttsSupported, voiceListenStart, voiceListenStop, voiceSpeak, voiceStopSpeaking, voiceLevel, liveTalk, type Recognizer, type VoiceStatus } from "@/lib/voice";
+import { createRecognizer, isSpeaking, isUrdu, speak, stopSpeaking, sttSupported, ttsSupported, voiceListenStart, voiceListenStop, voiceListenCancel, voiceSpeak, voiceStopSpeaking, voiceLevel, liveTalk, type Recognizer, type VoiceStatus } from "@/lib/voice";
 import { ApprovalCard } from "./ApprovalCard";
 import { AgentGlyph, StateBadge, STATE_META, TaskStatus } from "./ui";
 import { ParticlePresence } from "./ParticlePresence";
@@ -99,7 +99,7 @@ export function CommandView({ agentId, setAgentId, openTask, prefill = "" }: { a
       showSpeaking(text);
       // If STARK voice is busy or over its free limit, the computer's own voice answers instead.
       if (engineVoice)
-        voiceSpeak(client, agentId, text).catch((e: any) => {
+        voiceSpeak(client, agentId, text, undefined, a.voice).catch((e: any) => {
           notify("warn", `${e.message} Using this computer's voice.`);
           speak(text, a.voice);
         });
@@ -203,32 +203,38 @@ export function CommandView({ agentId, setAgentId, openTask, prefill = "" }: { a
   }, [send]);
 
   // ---------------- voice ----------------
+  // Push-to-talk state lives in a ref: React state lags a render behind, so a quick press/release (or the
+  // touch + emulated mouse pair a touchscreen fires) used to start twice or never stop, leaving the mic on.
+  const ptt = useRef<"idle" | "on">("idle");
   const startPtt = useCallback(() => {
+    if (ptt.current === "on") return;
+    ptt.current = "on";
+    setPttActive(true);
+    setListeningAgent(agentId);
+    const failed = (e: any, warn = false) => {
+      ptt.current = "idle";
+      setPttActive(false);
+      setListeningAgent(null);
+      notify(warn ? "warn" : "error", e?.message || String(e));
+    };
     if (vstatus?.fast) {
-      if (pttActive) return;
-      setPttActive(true);
-      setListeningAgent(agentId);
       hush();
       liveTalk(client, agentId, true).catch((e: any) => {
-        setPttActive(false);
-        setListeningAgent(null);
         setVstatus((v) => (v ? { ...v, fast: false } : v)); // use the normal voice from now on
-        notify("warn", e.message);
+        failed(e, true);
       });
       return;
     }
     if (engineVoice && vstatus) {
-      if (pttActive) return;
-      setPttActive(true);
-      setListeningAgent(agentId);
-      voiceListenStart(client, vstatus).catch((e: any) => {
-        setPttActive(false);
-        setListeningAgent(null);
-        notify("error", e.message);
-      });
+      voiceListenStart(client, vstatus).catch((e: any) => failed(e));
       return;
     }
-    if (!sttSupported()) return notify("warn", "Speech recognition is not supported in this browser (try Chrome, Edge or Safari).");
+    if (!sttSupported()) {
+      ptt.current = "idle";
+      setPttActive(false);
+      setListeningAgent(null);
+      return notify("warn", "Speech recognition is not supported in this browser (try Chrome, Edge or Safari).");
+    }
     stopSpeaking();
     recRef.current?.stop();
     const rec = createRecognizer({
@@ -236,9 +242,10 @@ export function CommandView({ agentId, setAgentId, openTask, prefill = "" }: { a
       onPartial: setPartial,
       onFinal: (t) => {
         setPartial("");
-        send(t);
+        sendRef.current(t);
       },
       onState: (on) => {
+        if (!on) ptt.current = "idle";
         setPttActive(on);
         setListeningAgent(on ? agentId : null);
       },
@@ -246,28 +253,46 @@ export function CommandView({ agentId, setAgentId, openTask, prefill = "" }: { a
     });
     recRef.current = rec;
     rec?.start();
-  }, [agent, agentId, client, engineVoice, hush, notify, pttActive, send, setListeningAgent, vstatus]);
+  }, [agent, agentId, client, engineVoice, hush, notify, setListeningAgent, vstatus]);
 
   const stopPtt = useCallback(() => {
+    if (ptt.current !== "on") return;
+    ptt.current = "idle";
+    setPttActive(false);
+    setListeningAgent(null);
     if (vstatus?.fast) {
-      if (!pttActive) return;
-      setPttActive(false);
-      setListeningAgent(null);
       liveTalk(client, agentId, false).catch(() => undefined);
       return;
     }
     if (!(engineVoice && vstatus)) return recRef.current?.stop();
-    if (!pttActive) return;
-    setPttActive(false);
-    setListeningAgent(null);
     setPartial("…");
     voiceListenStop(client, vstatus)
       .then((t) => {
-        if (t) send(t);
+        if (t) sendRef.current(t);
       })
       .catch((e: any) => notify("error", e.message))
       .finally(() => setPartial(""));
-  }, [agentId, client, engineVoice, notify, pttActive, send, setListeningAgent, vstatus]);
+  }, [agentId, client, engineVoice, notify, setListeningAgent, vstatus]);
+
+  // Losing the window while holding (Alt+Tab, a system dialog) would otherwise keep recording forever.
+  useEffect(() => {
+    const lost = () => {
+      if (ptt.current !== "on") return;
+      if (engineVoice && vstatus && !vstatus.fast) {
+        ptt.current = "idle";
+        setPttActive(false);
+        setListeningAgent(null);
+        voiceListenCancel(client, vstatus);
+      } else stopPtt();
+    };
+    const hidden = () => document.visibilityState === "hidden" && lost();
+    window.addEventListener("blur", lost);
+    document.addEventListener("visibilitychange", hidden);
+    return () => {
+      window.removeEventListener("blur", lost);
+      document.removeEventListener("visibilitychange", hidden);
+    };
+  }, [client, engineVoice, setListeningAgent, stopPtt, vstatus]);
 
   useEffect(() => {
     if (!wakeMode) return;
@@ -404,11 +429,15 @@ export function CommandView({ agentId, setAgentId, openTask, prefill = "" }: { a
           <div className="flex flex-wrap gap-2">
             <button
               className={`btn ${pttActive ? "btn-primary" : ""}`}
-              onMouseDown={startPtt}
-              onMouseUp={stopPtt}
-              onMouseLeave={() => pttActive && stopPtt()}
-              onTouchStart={startPtt}
-              onTouchEnd={stopPtt}
+              onPointerDown={(e) => {
+                if (e.button !== 0) return;
+                e.currentTarget.setPointerCapture?.(e.pointerId); // keeps the release even if the finger slides off
+                startPtt();
+              }}
+              onPointerUp={stopPtt}
+              onPointerCancel={stopPtt}
+              onLostPointerCapture={stopPtt}
+              onContextMenu={(e) => e.preventDefault()}
               onKeyDown={(e) => {
                 if ((e.key === " " || e.key === "Enter") && !e.repeat) {
                   e.preventDefault();
@@ -421,7 +450,7 @@ export function CommandView({ agentId, setAgentId, openTask, prefill = "" }: { a
                   stopPtt();
                 }
               }}
-              onBlur={() => pttActive && stopPtt()}
+              onBlur={stopPtt}
               disabled={!engineVoice && !sttSupported()}
               title={engineVoice ? "Hold to talk to Vision or Wanda (English or Urdu). Start with a name to choose who answers." : "Hold to talk (mouse, touch, or hold Space/Enter)"}
               aria-pressed={pttActive}

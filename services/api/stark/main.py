@@ -152,6 +152,10 @@ class BlueskyIn(BaseModel):
     app_password: str = Field(..., min_length=8, max_length=64)
 
 
+class MastodonLoginIn(BaseModel):
+    base_url: str = Field(max_length=200)
+
+
 class AccountIn(BaseModel):
     values: dict[str, str] = Field(..., max_length=4)
 
@@ -757,12 +761,19 @@ def create_app(settings: Settings | None = None, providers: dict[str, ModelProvi
 
         from fastapi.responses import HTMLResponse
 
-        return HTMLResponse(f"<!doctype html><meta charset=utf-8><title>STARK AI</title><body style='font:16px "
-                            f"system-ui;background:#0b0f17;color:#e5e7eb;padding:48px'><h2>{escape(title)}</h2>"
-                            f"<p>{escape(text)}</p>{extra}</body>", status_code=status)
+        # A successful sign-in tab closes itself (where the browser allows it); STARK AI notices the new account
+        # on its own, so the user never has to come back and press anything.
+        close = ("<script>setTimeout(function(){try{window.close()}catch(e){}},2500)</script>"
+                 if status == 200 and title == "Connected" else "")
+        return HTMLResponse(f"<!doctype html><meta charset=utf-8><meta name=viewport content='width=device-width'>"
+                            f"<title>STARK AI</title><body style='font:16px system-ui;background:#05070c;color:#e5e7eb;"
+                            f"padding:48px;max-width:640px;margin:auto'><h2 style='font-weight:600;letter-spacing:-.01em'>"
+                            f"{escape(title)}</h2><p style='color:#9aa4b2'>{escape(text)}</p>{extra}{close}</body>",
+                            status_code=status, headers={"cache-control": "no-store", "referrer-policy": "no-referrer"})
 
     @app.post("/api/oauth/{platform}/start", dependencies=[api])
-    async def oauth_start(platform: str, body: AccountIn, request: Request, k: Kernel = Depends(kernel)):
+    async def oauth_start(platform: str, body: AccountIn, request: Request, open: bool = False,
+                          k: Kernel = Depends(kernel)):
         from . import oauth
 
         if platform not in oauth.PROVIDERS:
@@ -776,10 +787,38 @@ def create_app(settings: Settings | None = None, providers: dict[str, ModelProvi
                               request.url.port or 8000, extra)
         except oauth.OAuthError as exc:
             raise HTTPException(400, str(exc))
-        return {"auth_url": url, "redirect_uri": oauth.redirect_uri(request.url.port or 8000, platform)}
+        return {"auth_url": url, "redirect_uri": oauth.redirect_uri(request.url.port or 8000, platform),
+                "opened": _open_browser(url, open)}
+
+    def _open_browser(url: str, want: bool) -> bool:
+        from . import oauth
+
+        return bool(want and settings.desktop and oauth.open_in_system_browser(url))
+
+    @app.post("/api/oauth/mastodon/login", dependencies=[api])
+    async def oauth_mastodon_login(body: MastodonLoginIn, request: Request, open: bool = False,
+                                   k: Kernel = Depends(kernel)):
+        """One-click Mastodon: STARK registers itself on the user's server; no token copying."""
+        from . import oauth
+        from .tools.web import FetchBlocked, check_url
+
+        if _social(k).store.from_env.get("mastodon"):
+            raise HTTPException(409, "This account is set in your .env file; change it there.")
+        base = body.base_url.strip().rstrip("/")
+        base = base if "://" in base else "https://" + base
+        try:
+            await check_url(base, settings.allow_private_fetch)
+            url = await oauth.mastodon_start(base, request.url.port or 8000, _social(k).transport)
+        except FetchBlocked as exc:
+            raise HTTPException(400, f"Server address refused: {exc}")
+        except oauth.OAuthError as exc:
+            raise HTTPException(400, str(exc))
+        except httpx.HTTPError:
+            raise HTTPException(502, "Could not reach that Mastodon server.")
+        return {"auth_url": url, "opened": _open_browser(url, open)}
 
     @app.post("/api/oauth/{platform}/login", dependencies=[api])
-    async def oauth_login(platform: str, request: Request, k: Kernel = Depends(kernel)):
+    async def oauth_login(platform: str, request: Request, open: bool = False, k: Kernel = Depends(kernel)):
         """"Log in with …" through Nexonic's official apps (STARK Connect)."""
         from . import oauth
 
@@ -788,9 +827,10 @@ def create_app(settings: Settings | None = None, providers: dict[str, ModelProvi
         if _social(k).store.from_env.get(platform):
             raise HTTPException(409, "This account is set in your .env file; change it there.")
         try:
-            return {"auth_url": oauth.official_start(settings.connect_url, platform, request.url.port or 8000)}
+            url = oauth.official_start(settings.connect_url, platform, request.url.port or 8000)
         except oauth.OAuthError as exc:
             raise HTTPException(400, str(exc))
+        return {"auth_url": url, "opened": _open_browser(url, open)}
 
     @app.get("/api/oauth/{platform}/pick", include_in_schema=False)
     async def oauth_pick(platform: str, token: str = "", id: str = "", k: Kernel = Depends(kernel)):
@@ -816,10 +856,33 @@ def create_app(settings: Settings | None = None, providers: dict[str, ModelProvi
 
         from . import oauth
 
-        if platform not in oauth.PROVIDERS and platform not in oauth.OFFICIAL:
+        if platform not in oauth.PROVIDERS and platform not in oauth.OFFICIAL and platform != "mastodon":
             return _oauth_page("Unknown platform", "This sign-in link is not valid.", 404)
 
         page = _oauth_page
+        if platform == "mastodon":
+            if not oauth.is_mastodon(state):
+                return page("Sign-in expired", "Start again from Your accounts.", 400)
+            if error or not code:
+                oauth.PENDING.pop(state, None)
+                return page("Sign-in cancelled", f"Nothing was connected ({error or 'no code'}). You can close this tab.", 400)
+            try:
+                # The server's address is checked again: its DNS may have changed since sign-in started.
+                from .tools.web import FetchBlocked, check_url
+
+                try:
+                    await check_url(oauth.mastodon_base(state), settings.allow_private_fetch)
+                except FetchBlocked as exc:
+                    oauth.PENDING.pop(state, None)
+                    raise oauth.OAuthError(f"Server address refused: {exc}") from exc
+                base, token = await oauth.mastodon_finish(state, code, _social(k).transport)
+                who = await _social(k).connect_mastodon(base, token)
+            except (oauth.OAuthError, social_tools.AdapterError, httpx.HTTPError) as exc:
+                k.obs.audit("user", "social.connect", "error", target=platform)
+                return page("Could not connect", _public(exc) if not isinstance(exc, httpx.HTTPError)
+                            else "Could not reach the platform.", 400)
+            k.obs.audit("user", "social.connect", "ok", target=platform)
+            return page("Connected", f"STARK AI is connected to {who}. You can close this tab and return to STARK AI.")
         if oauth.is_official(state):
             if error or not code:
                 oauth.PENDING.pop(state, None)

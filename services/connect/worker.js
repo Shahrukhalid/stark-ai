@@ -68,6 +68,18 @@ const enc = new TextEncoder();
 const b64u = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 const unb64u = (s) => atob(s.replace(/-/g, "+").replace(/_/g, "/"));
 
+// Constant-time comparison so the state signature can't be guessed byte by byte from response timing.
+export function safeEqual(a, b) {
+  a = String(a || "");
+  b = String(b || "");
+  let diff = a.length ^ b.length;
+  for (let i = 0; i < Math.max(a.length, b.length); i++) diff |= (a.charCodeAt(i) || 0) ^ (b.charCodeAt(i) || 0);
+  return diff === 0;
+}
+
+// Without a real STATE_KEY every state would be signed with the text "undefined": refuse to run instead.
+const keyOk = (env) => typeof env.STATE_KEY === "string" && env.STATE_KEY.length >= 32;
+
 async function hmac(key, data) {
   const k = await crypto.subtle.importKey("raw", enc.encode(key), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
   return b64u(await crypto.subtle.sign("HMAC", k, enc.encode(data)));
@@ -120,6 +132,7 @@ export default {
     if (action === "" || action === "health") return json({ ok: true, platforms: Object.keys(PROVIDERS).filter((x) => creds(env, x)) });
     if (!PROVIDERS[p]) return json({ error: "unknown platform" }, 404);
     if (!creds(env, p)) return json({ error: `Login with ${p} is not set up on this server yet` }, 503);
+    if (!keyOk(env)) return json({ error: "STARK Connect is missing its STATE_KEY (32+ characters)" }, 503);
     const prov = PROVIDERS[p];
 
     if (action === "start" && req.method === "GET") {
@@ -146,8 +159,13 @@ export default {
 
     if (action === "cb" && req.method === "GET") {
       const [payload, sig] = (url.searchParams.get("state") || "").split(".");
-      if (!payload || sig !== (await hmac(env.STATE_KEY, payload))) return json({ error: "bad state" }, 400);
-      const st = JSON.parse(unb64u(payload));
+      if (!payload || !safeEqual(sig, await hmac(env.STATE_KEY, payload))) return json({ error: "bad state" }, 400);
+      let st;
+      try {
+        st = JSON.parse(unb64u(payload));
+      } catch {
+        return json({ error: "bad state" }, 400);
+      }
       if (st.p !== p || Date.now() - st.t > MAX_AGE_MS || !RETURN_RE.test(st.r)) return json({ error: "expired" }, 400);
       const back = new URL(st.r);
       back.searchParams.set("state", st.s);

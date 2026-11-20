@@ -10,6 +10,7 @@ import array
 import math
 import queue
 import threading
+import time
 from typing import Any
 
 from .gemini import wav_bytes
@@ -32,6 +33,9 @@ class AudioUnavailable(RuntimeError):
     pass
 
 
+RESCAN_EVERY_S = 5.0
+
+
 class Audio:
     def __init__(self, sd: Any = None):
         self._sd = sd
@@ -43,6 +47,10 @@ class Audio:
         self.mic_level = 0.0
         self.out_level = 0.0
         self.playing = False
+        # Push-to-talk ordering: every press/release bumps the generation synchronously (in request order), so a
+        # start that reaches the microphone after its release was already handled never opens the stream.
+        self._gen = 0
+        self._rescanned = float("-inf")
 
     def _module(self):
         if self._sd is None:
@@ -53,9 +61,35 @@ class Audio:
             self._sd = sounddevice
         return self._sd
 
-    def available(self) -> tuple[bool, str]:
+    def _rescan(self, sd: Any) -> None:
+        """PortAudio caches the device list at start-up: a microphone plugged in later (or a headset that
+        Bluetooth connects after launch) is invisible until it is re-initialised. Done only while idle."""
+        # Re-initialising PortAudio while another thread opens a stream can crash it, so this never waits for or races
+        # with start()/stop() (non-blocking lock), and runs at most every few seconds however often the page asks.
+        now = time.monotonic()
+        if self._stream is not None or self.playing or now - self._rescanned < RESCAN_EVERY_S:
+            return
+        if not self._lock.acquire(blocking=False):
+            return
+        try:
+            if self._stream is not None or self.playing:
+                return
+            term, init = getattr(sd, "_terminate", None), getattr(sd, "_initialize", None)
+            if callable(term) and callable(init):
+                try:
+                    term()
+                    init()
+                except Exception:  # noqa: BLE001 - keep the old list rather than break audio
+                    pass
+            self._rescanned = now
+        finally:
+            self._lock.release()
+
+    def available(self, rescan: bool = False) -> tuple[bool, str]:
         try:
             sd = self._module()
+            if rescan:
+                self._rescan(sd)
             sd.query_devices(kind="input")
             sd.query_devices(kind="output")
         except AudioUnavailable:
@@ -64,13 +98,48 @@ class Audio:
             return False, "No microphone or speaker found."
         return True, ""
 
+    def devices(self) -> dict[str, Any]:
+        """Real-device diagnostics: what PortAudio sees right now (names only, nothing is recorded)."""
+        try:
+            sd = self._module()
+        except AudioUnavailable as exc:
+            return {"ok": False, "reason": str(exc), "inputs": [], "outputs": []}
+        self._rescan(sd)
+        try:
+            all_ = list(sd.query_devices())
+        except Exception:  # noqa: BLE001
+            all_ = []
+
+        def default(kind: str) -> str:
+            try:
+                return str(sd.query_devices(kind=kind).get("name", ""))
+            except Exception:  # noqa: BLE001
+                return ""
+        ins = [str(d.get("name", "")) for d in all_ if isinstance(d, dict) and d.get("max_input_channels", 0) > 0]
+        outs = [str(d.get("name", "")) for d in all_ if isinstance(d, dict) and d.get("max_output_channels", 0) > 0]
+        di, do = default("input"), default("output")
+        return {"ok": bool(di and do), "reason": "" if di and do else "No microphone or speaker found.",
+                "inputs": ins, "outputs": outs, "default_input": di, "default_output": do}
+
     @property
     def recording(self) -> bool:
         return self._stream is not None
 
-    def start(self) -> None:
+    def begin(self) -> int:
+        """Call on the request thread when talk is pressed; pass the result to start()."""
+        self._gen += 1
+        return self._gen
+
+    def release(self) -> None:
+        """Call on the request thread when talk is released (before stop() runs in a worker)."""
+        self._gen += 1
+
+    def start(self, gen: int | None = None) -> bool:
+        """Open the microphone. False when the press was already released (nothing is opened)."""
         sd = self._module()
         with self._lock:
+            if gen is not None and gen != self._gen:
+                return False
             self._close_input()
             self._buf = bytearray()
             limit = RATE * 2 * MAX_SECONDS
@@ -87,6 +156,7 @@ class Audio:
                 self._stream = None
                 raise AudioUnavailable("The microphone could not be opened. Allow microphone access for "
                                        "STARK AI in your system settings.") from exc
+        return True
 
     def stream(self, on_chunk) -> None:
         """Record and hand each block to on_chunk(bytes) as it arrives (fast mode). Stop with cancel()."""

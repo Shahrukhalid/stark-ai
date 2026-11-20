@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { isDesktop } from "@/lib/api";
 import { useStark } from "@/lib/store";
-import { voiceSpeak, type VoiceChoices, type VoiceStatus } from "@/lib/voice";
+import { micErrorText, voiceSpeak, type VoiceChoices, type VoiceDiagnostics, type VoiceStatus } from "@/lib/voice";
 import { AgentGlyph } from "./ui";
 import { Section } from "./ui";
 
@@ -22,6 +22,43 @@ export function VoiceSettings() {
   const [script, setScript] = useState("urdu");
   const [fast, setFast] = useState(false);
   const [busy, setBusy] = useState("");
+  const [diag, setDiag] = useState<(VoiceDiagnostics & { browserMics?: string[]; peak?: number; micError?: string }) | null>(null);
+
+  /** Real-device check: what the engine and this page can actually see and hear (records 2 s, keeps nothing). */
+  async function check() {
+    setBusy("check");
+    try {
+      const d = await client.get<VoiceDiagnostics>("/api/voice/diagnostics");
+      const extra: { browserMics?: string[]; peak?: number; micError?: string } = {};
+      if (!d.desktop && navigator.mediaDevices?.getUserMedia) {
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          const ctx = new AudioContext();
+          const an = ctx.createAnalyser();
+          ctx.createMediaStreamSource(stream).connect(an);
+          const buf = new Float32Array(an.fftSize);
+          let peak = 0;
+          const until = Date.now() + 2000;
+          while (Date.now() < until) {
+            an.getFloatTimeDomainData(buf);
+            for (const v of buf) peak = Math.max(peak, Math.abs(v));
+            await new Promise((r) => setTimeout(r, 50));
+          }
+          stream.getTracks().forEach((t) => t.stop());
+          await ctx.close();
+          extra.peak = peak;
+          extra.browserMics = (await navigator.mediaDevices.enumerateDevices()).filter((x) => x.kind === "audioinput").map((x) => x.label || "Microphone");
+        } catch (e) {
+          extra.micError = micErrorText(e);
+        }
+      }
+      setDiag({ ...d, ...extra });
+    } catch (e: any) {
+      notify("error", e.message);
+    } finally {
+      setBusy("");
+    }
+  }
 
   useEffect(() => {
     client
@@ -72,7 +109,8 @@ export function VoiceSettings() {
     const pick = choices?.agents[agentId];
     setBusy(agentId);
     try {
-      await voiceSpeak(client, agentId, sample(name), pick ? { voice: pick.voice, style: pick.style } : undefined);
+      const agent = agents.find((a) => a.id === agentId);
+      await voiceSpeak(client, agentId, sample(name), pick ? { voice: pick.voice, style: pick.style } : undefined, agent?.voice);
     } catch (e: any) {
       notify("error", e.message);
     } finally {
@@ -132,7 +170,8 @@ export function VoiceSettings() {
             </span>
           </label>
           <div className="flex items-end">
-            <button type="button" className="btn btn-primary" disabled={busy === "save" || !key} onClick={save}>
+            <button type="button" className="btn btn-primary" disabled={busy === "save" || (engine === "gemini" && !key)} onClick={save}
+              title={engine === "gemini" && !key ? "Paste a Gemini key, or choose Browser speech" : undefined}>
               {busy === "save" ? "Saving…" : "Save and restart"}
             </button>
           </div>
@@ -142,6 +181,33 @@ export function VoiceSettings() {
           Set <code className="font-mono">GEMINI_API_KEY</code> (and optionally <code className="font-mono">STARK_VOICE_LANGUAGE=ur</code>) in .env and restart the API.
         </p>
       )}
+      <div className="mt-4 rounded-xl border border-[var(--color-line)] bg-white/[0.02] p-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="hud-label text-[var(--color-mute)]">Voice check</span>
+          <button type="button" className="btn ml-auto" disabled={busy === "check"} onClick={check}>
+            {busy === "check" ? "Listening for 2 seconds…" : "Run voice check"}
+          </button>
+        </div>
+        {diag && (
+          <ul className="mt-2 space-y-1 text-xs" aria-live="polite">
+            <li>Engine: <b>{diag.engine === "gemini" ? "STARK voice (Gemini)" : "Browser speech"}</b>{diag.key ? "" : " · no Gemini key"}</li>
+            <li>Offline speech-to-text: {diag.offline_stt ? <b className="text-emerald-400">ready ({diag.offline_model})</b> : "not installed (download a speech model in Video studio)"}</li>
+            {diag.desktop ? (
+              <>
+                <li className={diag.ok ? "text-emerald-400" : "text-amber-300"}>{diag.ok ? `Microphone: ${diag.default_input} · Speaker: ${diag.default_output}` : diag.reason}</li>
+                {diag.inputs.length > 1 && <li className="text-[var(--color-mute)]">Other microphones: {diag.inputs.filter((x) => x !== diag.default_input).join(", ")}</li>}
+              </>
+            ) : diag.micError ? (
+              <li className="text-amber-300">{diag.micError}</li>
+            ) : (
+              <li className={diag.peak && diag.peak > 0.02 ? "text-emerald-400" : "text-amber-300"}>
+                {diag.peak && diag.peak > 0.02 ? "Microphone heard you." : "The microphone is on but heard nothing; check the input level or pick another microphone."}
+                {diag.browserMics?.length ? ` (${diag.browserMics.join(", ")})` : ""}
+              </li>
+            )}
+          </ul>
+        )}
+      </div>
       {st?.engine === "gemini" && choices && (
         <div className="mt-4 space-y-2">
           <p className="hud-label text-[var(--color-mute)]">Voices: pick one for each assistant and press Hear</p>

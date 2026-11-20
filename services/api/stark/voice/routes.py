@@ -10,12 +10,14 @@ from typing import Any, Callable, Literal
 from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
+from . import offline
 from .audio import Audio, AudioUnavailable
 from .gemini import MESSAGES, STYLES, VOICES, GeminiVoice, VoiceError, spoken, wav_bytes
 
 MAX_UPLOAD = 10 * 1024 * 1024
 MIC_HELP = "The microphone could not be opened. Allow microphone access for STARK AI in your system settings."
 PREFS = "voice_prefs"
+OFFLINE_KINDS = {"no_key", "network", "timeout", "limit", "provider"}
 
 
 class TranscribeIn(BaseModel):
@@ -53,10 +55,12 @@ def register(app: FastAPI, api: Any, kernel: Callable[[], Any], settings: Any, a
     def engine() -> Literal["gemini", "browser"]:
         return "gemini" if settings.voice_engine == "gemini" and voice.configured() else "browser"
 
-    def local_audio() -> tuple[bool, str]:
+    offline.configure(settings)
+
+    def local_audio(rescan: bool = False) -> tuple[bool, str]:
         if not settings.desktop:
             return False, "The engine is not on this computer; the page records instead."
-        return audio.available()
+        return audio.available(rescan)
 
     def fail(exc: Exception) -> HTTPException:
         """Only fixed texts are shown; details stay in the engine."""
@@ -66,15 +70,31 @@ def register(app: FastAPI, api: Any, kernel: Callable[[], Any], settings: Any, a
 
     @app.get("/api/voice/status", dependencies=[api])
     def status() -> dict[str, Any]:
-        ok, why = local_audio()
+        ok, why = local_audio(rescan=not audio.recording)  # picks up a microphone plugged in after launch
         return {"engine": engine(), "configured": voice.configured(), "local_audio": ok, "local_reason": why,
                 "fast": bool(settings.voice_fast and ok and engine() == "gemini"),
+                "offline_stt": offline.ready(),
                 "language": settings.voice_language, "urdu_script": settings.voice_urdu_script}
+
+    @app.get("/api/voice/diagnostics", dependencies=[api])
+    def diagnostics() -> dict[str, Any]:
+        """What this computer's audio stack actually sees, for the Voice check panel. Never records."""
+        dev = audio.devices() if settings.desktop else {"ok": False, "reason": "Browser mode: the page uses its own "
+                                                        "microphone permission.", "inputs": [], "outputs": []}
+        return {"desktop": bool(settings.desktop), "engine": engine(), "key": voice.configured(),
+                "fast": bool(settings.voice_fast), "offline_stt": offline.ready(), "offline_model": offline.model_name(),
+                "recording": audio.recording, "playing": audio.playing, **dev}
 
     async def _text(wav: bytes, mime: str) -> dict[str, Any]:
         try:
             text = await voice.transcribe(wav, mime, settings.voice_language, settings.voice_urdu_script)
         except VoiceError as exc:
+            # No key, no internet, quota or timeout: use the on-device model when one is installed.
+            if exc.kind in OFFLINE_KINDS and offline.ready():
+                try:
+                    return {"text": await asyncio.to_thread(offline.transcribe, wav, mime), "offline": True}
+                except offline.OfflineError:
+                    pass
             raise fail(exc) from None
         return {"text": text}
 
@@ -84,19 +104,22 @@ def register(app: FastAPI, api: Any, kernel: Callable[[], Any], settings: Any, a
         if not ok:
             raise HTTPException(409, why)
         audio.stop_playing()
+        gen = audio.begin()
         try:
-            await asyncio.to_thread(audio.start)
+            opened = await asyncio.to_thread(audio.start, gen)
         except AudioUnavailable as exc:
             raise fail(exc) from None
-        return {"listening": True}
+        return {"listening": bool(opened)}
 
     @app.post("/api/voice/listen/stop", dependencies=[api])
     async def listen_stop() -> dict[str, Any]:
+        audio.release()
         wav = await asyncio.to_thread(audio.stop)
         return await _text(wav, "audio/wav") if wav else {"text": ""}
 
     @app.post("/api/voice/listen/cancel", dependencies=[api])
     def listen_cancel() -> dict[str, Any]:
+        audio.release()
         audio.cancel()
         return {"listening": False}
 
@@ -170,6 +193,11 @@ def register(app: FastAPI, api: Any, kernel: Callable[[], Any], settings: Any, a
         except VoiceError as exc:
             if player is not None:
                 player.close()
+                if exc.kind in OFFLINE_KINDS:  # connection lost mid-reply: keep what was already said
+                    return {"played": True, "text": text, "partial": True}
+            if exc.kind in OFFLINE_KINDS and not pcm:
+                # Offline voice: the page speaks with the computer's own system voice instead of failing.
+                return {"played": False, "text": text, "fallback": "system", "reason": MESSAGES[exc.kind]}
             raise fail(exc) from None
         if player is not None:
             player.close()
